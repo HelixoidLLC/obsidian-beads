@@ -41,6 +41,15 @@ the Beads database directly.
 
 Upstream: `https://github.com/Rome-1/obsidian-beads` (MIT). User docs: `README.md`.
 
+### Fork branches (HelixoidLLC)
+
+- `helixoid/main` — what this fork **ships**: upstream merged in, plus fork-only
+  docs and the fork's version numbering (`0.1.x`, ahead of upstream's `0.0.x`).
+  Releases are cut from here; BRAT installs from them
+- `feat/…` branches — what is **offered upstream** (e.g. PR #2). Keep these free
+  of fork-only docs and version bumps, so the PR diff stays about the feature
+- `main` — tracks upstream's `main`, nothing of ours
+
 ## Repository Structure
 
 ```
@@ -104,6 +113,10 @@ npm run test:coverage  # same, with a per-file coverage table
 - Known lint warning: `settings.ts` doesn't implement `getSettingDefinitions()` (declarative settings API, Obsidian 1.13+)
 
 ## Installing the Local Copy into Obsidian (dev loop)
+
+> This section is the **development** loop (symlink + watch). For getting a
+> build into a vault you actually work in — BRAT from the fork, build-and-copy,
+> or upstream — see [`docs/INSTALL.md`](docs/INSTALL.md).
 
 Obsidian loads a plugin from `<vault>/.obsidian/plugins/<id>/` and reads
 `manifest.json`, `main.js`, and `styles.css`. The folder name **must** be the

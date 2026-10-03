@@ -63,16 +63,37 @@ who tracks work in `bd` and lives in Obsidian.
 
 ## Installation
 
-### Community plugins (once accepted)
+See **[docs/INSTALL.md](docs/INSTALL.md)** for all the options (BRAT, build and
+copy, dev symlink) and the post-install setup.
 
-Settings → Community plugins → Browse → search **"Beads"** → Install → Enable.
+This repo is the **Helixoid fork**. It carries work upstream hasn't merged yet
+(markdown text fields, the lineage graph, pane filters), so **upstream's
+releases don't contain those** — installing from upstream is a downgrade if
+you're already on a fork build.
 
-### Manual
+### From this fork, with updates (BRAT)
 
-1. Download `main.js`, `manifest.json`, and `styles.css` from the latest
-   [release](https://github.com/Rome-1/obsidian-beads/releases).
-2. Copy them into `<your-vault>/.obsidian/plugins/beads-pane/`.
-3. Reload Obsidian and enable **Beads** under Community plugins.
+Install [BRAT](https://github.com/TfTHacker/obsidian42-brat), run **BRAT: Add a
+beta plugin for testing**, and give it `HelixoidLLC/obsidian-beads`. Then enable
+**Beads** under Community plugins.
+
+### From this fork, once
+
+```bash
+npm install && npm run build
+cp main.js manifest.json styles.css "<your-vault>/.obsidian/plugins/beads-pane/"
+```
+
+Reload Obsidian and enable **Beads**. It's a copy, so a later rebuild doesn't
+reach the vault — re-run the `cp`.
+
+### Upstream (without this fork's features)
+
+Settings → Community plugins → Browse → search **"Beads"** (once accepted), or
+download the three files from the
+[latest upstream release](https://github.com/Rome-1/obsidian-beads/releases).
+
+Beads is **desktop only** — it shells out to `bd`, so it won't load on mobile.
 
 ## Usage
 
