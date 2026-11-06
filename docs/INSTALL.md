@@ -4,7 +4,7 @@ Three ways to get the plugin into a vault. Pick by what you're doing:
 
 | You want to… | Use |
 | --- | --- |
-| Run the Helixoid fork (markdown fields, lineage graph, pane filters) and get updates | [BRAT, from this fork](#1-brat-from-this-fork) |
+| Run the Helixoid fork and get updates | [BRAT, from this fork](#1-brat-from-this-fork) |
 | Run the fork once, no auto-updates | [Build and copy](#2-build-and-copy) |
 | Change the plugin's code | [Dev symlink](#3-dev-symlink) |
 | Run the upstream plugin only | [Upstream](#4-upstream-rome-1) |
@@ -12,11 +12,10 @@ Three ways to get the plugin into a vault. Pick by what you're doing:
 > **Which repo am I installing from?**
 > Upstream is [`Rome-1/obsidian-beads`](https://github.com/Rome-1/obsidian-beads)
 > — the version in Obsidian's community directory. This repo is the Helixoid
-> fork, which carries work upstream hasn't merged yet (see
-> [PR #2](https://github.com/Rome-1/obsidian-beads/pull/2)): the markdown text
-> fields, the lineage graph, and the pane filters. **Upstream's releases do not
-> contain those**, so installing from upstream is a downgrade if you're already
-> on a fork build.
+> fork. Upstream has since merged its features (the markdown text fields, the
+> lineage graph, and the pane filters, via
+> [PR #6](https://github.com/Rome-1/obsidian-beads/pull/6)), so the fork currently
+> differs from upstream only in its docs.
 
 Everything below writes into `<vault>/.obsidian/plugins/beads-pane/`. The folder
 name **must** be `beads-pane` (the manifest id), and all three files
@@ -97,7 +96,7 @@ obsidian dev:console level=error             # read captured console errors
 
 ## 4. Upstream (Rome-1)
 
-The directory version, without this fork's features.
+The directory version.
 
 - **Community plugins** (once accepted): Settings → Community plugins → Browse →
   search **"Beads"** → Install → Enable.
@@ -109,11 +108,11 @@ The directory version, without this fork's features.
 
 ## After installing
 
-1. **Settings → Beads → Project root** — a directory containing `.beads/`. It
-   auto-fills when the vault root has one.
+1. **Settings → Beads → Add project** — a name and a directory containing
+   `.beads/`.
 2. **bd binary path** — a GUI-launched Obsidian usually doesn't inherit your
    shell `PATH`, so give the full path (`which bd`, e.g. `/opt/homebrew/bin/bd`).
-3. Click **Test connection** (runs `bd --version`).
+3. Click the project's **Test** (runs `bd --version` there).
 4. Open the pane: the **list-checks** ribbon icon, or **Beads: Open pane**.
 
 **Live updates** need **bd >= 1.3.0** with the events journal switched on. The
@@ -142,6 +141,7 @@ The tag **must exactly match** `manifest.json`'s `version`, with **no `v`
 prefix** — BRAT and Obsidian both match on it. Attach the three files as
 individual assets.
 
-Fork versions are numbered **ahead of upstream** (upstream is on `0.0.x`, the
-fork on `0.1.x`) so a fork build is never mistaken for a directory build and
-BRAT never sees a downgrade.
+A new fork version must be higher than the last one released here, or BRAT
+won't offer it as an update. Upstream's numbers have caught up with the fork's
+(both are on `0.1.x`), so a plain version number no longer tells a fork build
+from a directory build.

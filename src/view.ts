@@ -7,8 +7,6 @@ import {
 	WorkspaceLeaf,
 	setIcon,
 } from "obsidian";
-import { existsSync } from "fs";
-import { join } from "path";
 import type BeadsPlugin from "./main";
 import { BeadIssue, VIEW_TYPE_BEADS } from "./types";
 import {
@@ -25,7 +23,14 @@ import {
 } from "./bd";
 import { renderIssueRow } from "./row";
 import { AssigneeSuggest } from "./assignee-suggest";
-import { JournalRecord, TabKey, TabList, applyRecord, byPriority } from "./journal";
+import {
+	JournalRecord,
+	TabKey,
+	TabList,
+	affectsCounts,
+	applyRecord,
+	byPriority,
+} from "./journal";
 import { FeedStatus } from "./feed";
 import {
 	EMPTY_FILTER,
@@ -81,8 +86,9 @@ interface PaneState {
  *
  * Filters (assignee / labels / type) are passed to bd as flags, for the lists
  * and the counts alike. The filter is kept in the view state, so it survives
- * reloads. Counts are per-view because they follow this pane's filter; only
- * the status bar's unfiltered ready count is shared (`plugin.readyCount`).
+ * reloads. Counts are per-view because they follow this pane's filter; an
+ * unfiltered pane's ready count also feeds the status bar (`setReadyCount`).
+ * A tab whose whole list is loaded is counted from its rows, not re-read.
  *
  * With the events journal on, changes are applied to the loaded rows in place;
  * only a change whose effect bd must compute re-reads the tab.
@@ -104,6 +110,11 @@ export class BeadsView extends ItemView {
 	private counts: Record<string, number> = {};
 	private countsInFlight = false;
 	private countsAgain = false;
+	private countsTimer: number | null = null;
+	/** Last count-relevant state per bead id under this pane's filter (`affectsCounts`). */
+	private seen = new Map<string, string>();
+	/** The root the loaded tabs, counts, and filter choices came from. */
+	private shownRoot: string | null = null;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -150,18 +161,22 @@ export class BeadsView extends ItemView {
 
 	async onClose(): Promise<void> {
 		if (this.reloadTimer !== null) window.clearTimeout(this.reloadTimer);
+		if (this.countsTimer !== null) window.clearTimeout(this.countsTimer);
 		for (const t of TABS) this.tabs[t.key] = this.emptyTab();
 	}
 
 	/** Apply journal records to the loaded tabs; re-read only what bd must settle. */
 	applyRecords(recs: JournalRecord[]): void {
 		const stale = new Set<TabKey>();
+		// The lists were read with this pane's filter as bd flags, so the
+		// same filter has to gate what a record may put back on screen.
+		const inScope = (i: BeadIssue) => matchesFilter(i, this.filter);
+		let recount = false;
 		for (const rec of recs) {
-			// The lists were read with this pane's filter as bd flags, so the
-			// same filter has to gate what a record may put back on screen.
-			const inScope = (i: BeadIssue) => matchesFilter(i, this.filter);
 			for (const k of applyRecord(this.tabs, rec, inScope)) stale.add(k);
+			recount = affectsCounts(rec, this.seen, inScope) || recount;
 		}
+		if (recount) this.scheduleCounts();
 		for (const k of stale) {
 			if (k !== this.active) this.tabs[k].loaded = false;
 		}
@@ -179,30 +194,57 @@ export class BeadsView extends ItemView {
 		this.render();
 	}
 
-	/**
-	 * The plugin found the counts may have moved. Its own number is unfiltered,
-	 * so this pane re-reads its own, filtered ones.
-	 */
-	onCounts(): void {
-		void this.loadCounts();
+	/** No filter: this pane's ready count is the status bar's too. */
+	isUnfiltered(): boolean {
+		return !isFilterActive(this.filter);
+	}
+
+	/** Coalesce recounts: one read per burst of journal records. */
+	private scheduleCounts(): void {
+		if (this.countsTimer !== null) window.clearTimeout(this.countsTimer);
+		this.countsTimer = window.setTimeout(() => {
+			this.countsTimer = null;
+			void this.loadCounts();
+		}, 300);
+	}
+
+	/** A tab's whole list is on screen: its count is its row count. */
+	private complete(key: TabKey): boolean {
+		const tab = this.tabs[key];
+		return tab.loaded && !tab.hasMore;
 	}
 
 	onFeedStatus(_st: FeedStatus): void {
 		this.render();
 	}
 
+	/**
+	 * The project list or the active project changed. On a new root, drop what
+	 * was read from the old one (rows, counts, filter choices) so none of it
+	 * shows under the new one; the plugin's feed restart re-reads. A rename
+	 * keeps the root, and everything on screen.
+	 */
+	onProjectsChange(): void {
+		const root = this.plugin.activeRoot();
+		if (this.shownRoot !== null && this.shownRoot !== root) {
+			for (const t of TABS) this.tabs[t.key] = this.emptyTab();
+			this.tabs[this.active].loading = true;
+			this.loadSeq++; // a read still in flight belongs to the old project
+			this.counts = {};
+			this.seen.clear();
+			this.options = null;
+			this.optionsError = null;
+			this.filterBarKey = ""; // rebuild the bar, so open choices reload
+		}
+		this.shownRoot = root;
+		this.render();
+	}
+
 	private resolveOpts(): BdOptions | null {
-		const s = this.plugin.settings;
-		if (!s.projectRoot) {
-			this.baseState = "no-root";
-			return null;
-		}
-		if (!existsSync(join(s.projectRoot, ".beads"))) {
-			this.baseState = "no-db";
-			return null;
-		}
-		this.baseState = "ok";
-		return { bdPath: s.bdPath, cwd: s.projectRoot };
+		this.shownRoot = this.plugin.activeRoot();
+		const opts = this.plugin.bdOptions();
+		this.baseState = opts ? "ok" : this.shownRoot ? "no-db" : "no-root";
+		return opts;
 	}
 
 	/** Full refresh: re-count and re-load the active tab; drop cached tabs. */
@@ -211,13 +253,15 @@ export class BeadsView extends ItemView {
 			this.tabs[t.key].loaded = false;
 			this.tabs[t.key].limit = PAGE;
 		}
+		this.seen.clear();
 		const opts = this.resolveOpts();
 		if (!opts) {
 			this.render();
 			return;
 		}
-		void this.loadCounts();
+		// List first: if it fits in one page, its length is the tab's count.
 		await this.loadTab(this.active);
+		await this.loadCounts();
 	}
 
 	/**
@@ -240,13 +284,21 @@ export class BeadsView extends ItemView {
 		// setFilter() swaps in a new object, so identity pins the result to the
 		// filter it was read for; a filter change mid-read discards it.
 		const f = this.filter;
+		const known: Partial<Record<TabKey, number>> = {};
+		for (const t of TABS) {
+			if (this.complete(t.key)) known[t.key] = this.tabs[t.key].issues.length;
+		}
 		this.countsInFlight = true;
 		try {
-			const counts = await tabCounts(f, {
-				ready: (args) => bdReady(opts, 0, args),
-				count: (status, args) => bdCount(opts, status, args),
-				blocked: () => bdBlocked(opts),
-			});
+			const counts = await tabCounts(
+				f,
+				{
+					ready: (args) => bdReady(opts, 0, args),
+					count: (status, args) => bdCount(opts, status, args),
+					blocked: () => bdBlocked(opts),
+				},
+				known,
+			);
 			if (f === this.filter) this.counts = counts;
 		} catch {
 			if (f === this.filter) this.counts = {}; /* counts are optional chrome */
@@ -392,6 +444,8 @@ export class BeadsView extends ItemView {
 		live: HTMLElement;
 		/** Holds the events-journal offer bar, when it's being offered. */
 		offer: HTMLElement;
+		/** The project switcher, shown only with two or more projects. */
+		project: HTMLSelectElement;
 	} | null = null;
 	/** What the filter bar was last built from — it's rebuilt only when this changes. */
 	private filterBarKey = "";
@@ -419,13 +473,14 @@ export class BeadsView extends ItemView {
 		shell.filterBtn.toggleClass("is-active", active || this.showFilters);
 		shell.refreshBtn.toggleClass("beads-spin", this.tabs[this.active].loading);
 		this.renderLive(shell.live);
+		this.renderProjectSelect(shell.project);
 
 		// Setup problems replace everything below the header.
 		shell.notice.setText(
 			this.baseState === "no-root"
-				? "No project root set. Open Beads settings and point it at a directory containing .beads/."
+				? "No project set. Open Beads settings and add a directory containing .beads/."
 				: this.baseState === "no-db"
-					? "No bd database here — this folder has no .beads/. Check the project root in Beads settings."
+					? "No bd database here — this folder has no .beads/. Check the project's path in Beads settings."
 					: "",
 		);
 		shell.notice.toggle(!ok);
@@ -442,13 +497,17 @@ export class BeadsView extends ItemView {
 			this.renderFilterBar(shell.filters, ok);
 		}
 
-		// Tab bar: active tab + counts, in place.
+		// Tab bar: active tab + counts, in place. A fully loaded tab shows its
+		// row count, so a journal patch to its rows moves the count with them.
 		for (const t of TABS) {
 			const { btn, count } = shell.tabs[t.key];
 			btn.toggleClass("is-active", t.key === this.active);
-			const n = this.counts[t.countKey];
+			const n = this.complete(t.key) ? this.tabs[t.key].issues.length : this.counts[t.countKey];
 			count.setText(typeof n === "number" ? String(n) : "");
 			count.toggle(typeof n === "number");
+			if (t.key === "ready" && ok && typeof n === "number" && this.isUnfiltered()) {
+				this.plugin.setReadyCount(n);
+			}
 		}
 
 		if (ok) this.renderBody(shell.body);
@@ -463,6 +522,11 @@ export class BeadsView extends ItemView {
 
 		const header = root.createDiv({ cls: "beads-header" });
 		header.createDiv({ cls: "beads-header-title", text: "Beads" });
+		const project = header.createEl("select", {
+			cls: "dropdown beads-project-select",
+			attr: { "aria-label": "Project" },
+		});
+		project.onchange = () => void this.plugin.setActiveProject(project.value);
 		const live = header.createSpan({ cls: "beads-live", attr: { role: "img" } });
 		const actions = header.createDiv({ cls: "beads-header-actions" });
 		const captureBtn = actions.createEl("button", {
@@ -498,7 +562,7 @@ export class BeadsView extends ItemView {
 		const offer = root.createDiv({ cls: "beads-offer-slot" });
 		const body = root.createDiv({ cls: "beads-tab-body" });
 
-		this.shell = { notice, filters, tabBar, tabs, body, filterBtn, refreshBtn, live, offer };
+		this.shell = { notice, filters, tabBar, tabs, body, filterBtn, refreshBtn, live, offer, project };
 		return this.shell;
 	}
 
@@ -731,6 +795,18 @@ export class BeadsView extends ItemView {
 	private clearButton(parent: HTMLElement): void {
 		const btn = parent.createEl("button", { cls: "beads-filter-clear", text: "Clear" });
 		btn.onclick = () => this.setFilter({ ...EMPTY_FILTER, labels: [] });
+	}
+
+	/** The header's project switcher, refilled in place; hidden with fewer than two projects. */
+	private renderProjectSelect(sel: HTMLSelectElement): void {
+		const { projects, activeProject } = this.plugin.settings;
+		sel.toggle(projects.length > 1);
+		if (projects.length < 2) return;
+		const names = projects.map((p) => p.name);
+		if (names.join("\n") !== Array.from(sel.options, (o) => o.value).join("\n")) {
+			setOptions(sel, names.map((n) => ({ value: n, label: n })), activeProject);
+		}
+		sel.value = activeProject;
 	}
 
 	/**

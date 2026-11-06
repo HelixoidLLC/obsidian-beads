@@ -35,7 +35,7 @@ the Beads database directly.
 - **Pane** (`ItemView`): Ready · In progress · Blocked · Closed tabs, each with a live count and paged with **Load more**
 - **Editor tab**: opens a bead like a note — a title, a Properties panel of typed controls, and markdown text fields (description / design / notes / acceptance). Save runs `bd update` with only the changed fields
 - **New bead**: `bd create` from the same editor, blank (command, or the `+` button)
-- **`beads` code blocks**: live query embeds inside notes (`ready`, `blocked`, `list`, `query: <expr>`, `limit: <n>`)
+- **`beads` code blocks**: live query embeds inside notes (`ready`, `blocked`, `list`, `query: <expr>`, `limit: <n>`, `project: <name>`)
 - **Live updates**: with bd >= 1.3.0 and `events-journal: true`, a long-lived `bd events tail --follow` patches rows in place; otherwise `fs.watch` on `.beads/` plus the refresh timer
 - **Status bar** `● N ready` (from `bd ready --limit 0`, never `bd status`)
 
@@ -44,10 +44,11 @@ Upstream: `https://github.com/Rome-1/obsidian-beads` (MIT). User docs: `README.m
 ### Fork branches (HelixoidLLC)
 
 - `helixoid/main` — what this fork **ships**: upstream merged in, plus fork-only
-  docs and the fork's version numbering (`0.1.x`, ahead of upstream's `0.0.x`).
-  Releases are cut from here; BRAT installs from them
+  docs (this file, `docs/INSTALL.md`). Upstream's version numbers have caught up
+  with the fork's, so the fork's numbering needs a decision before its next
+  release. Releases are cut from here; BRAT installs from them
 - `feat/…` branches — what is **offered upstream** (e.g. PR #2). Keep these free
-  of fork-only docs and version bumps, so the PR diff stays about the feature
+  of fork-only docs (upstream removed this file) and version bumps, so the PR diff stays about the feature
 - `main` — tracks upstream's `main`, nothing of ours
 
 ## Repository Structure
@@ -60,7 +61,9 @@ obsidian-beads/
 │   ├── view.ts        # The tabbed pane (ItemView, VIEW_TYPE_BEADS)
 │   ├── editor.ts      # Bead editor tab (title, property controls, markdown text fields, deps, comments)
 │   ├── mdfield.ts     # Markdown text field: rendered preview, click to edit (description/design/notes/acceptance)
-│   ├── mdtext.ts      # Pure text helpers (escape `<placeholder>` outside code before rendering)
+│   ├── untrusted.ts   # renderUntrustedMarkdown: the one path for rendering bead text
+│   ├── projects.ts    # Pure helpers for the list of bd projects
+│   ├── node.d.ts      # Local types for the Node APIs in use (no @types/node)
 │   ├── editmodel.ts   # Pure editor model: bead → editable snapshot → minimal `bd update` diff
 │   ├── filter.ts      # Pure pane filter: assignee/labels/type → bd flags, local match for `bd blocked`, assignee suggestions
 │   ├── assignee-suggest.ts # Assignee box popup (AbstractInputSuggest): typed / Unassigned / saved (× to forget) / bd
@@ -70,7 +73,7 @@ obsidian-beads/
 │   ├── journal.ts     # Pure journal logic: parse a record, apply it to the loaded tabs, count relevance
 │   ├── codeblock.ts   # ```beads``` code-block processor
 │   ├── row.ts         # Shared row component (pane + code block render the same row)
-│   ├── settings.ts    # Settings + tab (projectRoot, bdPath, refreshIntervalSec, journalOfferDismissed, assignee lists)
+│   ├── settings.ts    # Settings + tab (projects, activeProject, bdPath, refreshIntervalSec, journalOfferDismissed, assignee lists)
 │   └── types.ts       # BeadIssue shape, issue types, priorities, editable statuses
 ├── tests/             # node --test: unit tests + real-bd integration tests
 ├── styles.css         # Plugin styles (shipped as-is)
@@ -89,7 +92,7 @@ obsidian-beads/
 
 ## Build Commands
 
-Use `npm` (lockfile is `package-lock.json`). Node 20+.
+Use `npm` (lockfile is `package-lock.json`). Node 22.6+.
 
 ```bash
 npm install            # deps (esbuild, obsidian typings, eslint)
@@ -102,7 +105,7 @@ npm run test:coverage  # same, with a per-file coverage table
 
 - **Test layout**: tests live in `tests/*.test.mts` and use `node:test` + `node:assert/strict`. There's no test framework; Node 22.6+ strips TS types natively
 - **Unit tests** cover pure modules only, i.e. modules that never import `obsidian`:
-  - `mdtext.ts`, `editmodel.ts`, `filter.ts`, `lineage.ts` (the walk, the layout and the view geometry), `journal.ts`
+  - `editmodel.ts`, `filter.ts`, `projects.ts`, `lineage.ts` (the walk, the layout and the view geometry), `journal.ts`
   - `buildUpdateArgs` and the JSON parsers (`parse*`) in `bd.ts`
   - Keep logic testable by moving it into pure modules. The views should only wire DOM to it
 - **Integration tests** (`tests/bd.integration.test.mts`) run the **real `bd`** against a throwaway database in the OS temp dir. They skip when `bd` isn't on `PATH`; set `BD_BIN` to use another binary
@@ -110,7 +113,6 @@ npm run test:coverage  # same, with a per-file coverage table
   - use `import type` for type-only imports (Node can't strip a value import of an interface)
   - no TS-only runtime syntax such as constructor parameter properties or enums
 - **UI** (`mdfield.ts`, `lineage-view.ts`, `editor.ts`, `main.ts`) still needs a manual check in a real vault (see below). `obsidian eval code=…` can drive the views and inspect the DOM
-- Known lint warning: `settings.ts` doesn't implement `getSettingDefinitions()` (declarative settings API, Obsidian 1.13+)
 
 ## Installing the Local Copy into Obsidian (dev loop)
 
@@ -153,9 +155,9 @@ obsidian vault=<name> plugin:reload id=beads-pane    # target a specific vault
 
 ### 3. Point the plugin at a beads database
 
-- **Settings → Beads → Project root** must be a folder that contains `.beads/`. It auto-fills if the vault root contains `.beads/`
+- **Settings → Beads → Add project**: a name and a folder that contains `.beads/`
 - **bd binary path**: GUI-launched Obsidian often doesn't inherit the shell `PATH`, so use the full path (`which bd`, e.g. `/opt/homebrew/bin/bd`)
-- Click **Test connection**. It runs `bd --version`
+- Click the project's **Test**. It runs `bd --version` there
 - Throwaway test database (no git needed):
 
 ```bash
@@ -174,7 +176,7 @@ Beads is a **distributed, dependency-aware issue tracker for AI agents**,
 written in Go and backed by **Dolt**, a version-controlled SQL database. A local
 source checkout is at `~/Dev/Helixoid/pmsynapse-side-examples/beads`. Docs are
 in its `docs/` folder and at https://beads.gascity.com/. Installed here: `bd
-1.2.2` (Homebrew, `/opt/homebrew/bin/bd`).
+1.3.4` (Homebrew, `/opt/homebrew/bin/bd`).
 
 ### Storage
 
@@ -244,13 +246,13 @@ comments now exist), but these rules still hold:
 - **Parse bd JSON only through `parseJson` in `bd.ts`**. It unwraps bd's v2 envelope (`{"schema_version", "data"}`), which becomes the default in bd 2.0 and can already be switched on with `BD_JSON_ENVELOPE=1`
   - Never call `JSON.parse` on bd output anywhere else
   - The integration suite runs every call in both formats
-  - ⚠️ `TODO(1)` in `bd.ts` / `journal.ts`: the `bd events tail` line parsing and the truncation payload still use a raw `JSON.parse`. The enveloped shape of a JSONL stream is unverified (it needs bd >= 1.3.0; 1.2.2 is installed), so it was left as-is rather than guessed. `bd vc status --json` **is** confirmed to wrap, and `bdHeadCommit` goes through `parseJson` — an integration test pins it
+  - ⚠️ `TODO(1)` in `bd.ts`: the `bd events tail` line parsing and the truncation payload still use a raw `JSON.parse`. The enveloped shape of a JSONL stream is unverified (it needs bd >= 1.3.0, which wasn't installed at the time), so it was left as-is rather than guessed. `bd vc status --json` **is** confirmed to wrap, and `bdHeadCommit` goes through `parseJson` — an integration test pins it
 - **`bd` computes and the plugin displays.** Ready, Blocked, and In-progress each come from their own `bd` command. There are no local state files and no caches, except the code-block read cache (4 s TTL, one read at a time, limit clamped to 50, cleared on every mutation)
 - **Pane filters** (`filter.ts`) are passed to bd as flags: `bd ready` / `bd list` / `bd count` take `--assignee`, repeated `--label` (AND) and `--type`
   - The unassigned flag is `--unassigned` for `ready` but `--no-assignee` for `list` / `count`
   - **Only exception**: `bd blocked` has no filter flags, so the Blocked tab filters its output with `matchesFilter`. An integration test checks that rule gives the same results as bd's own flags
-  - **Tab counts always come from the same command as the tab's list** (`tabCounts` in `filter.ts`): `bd ready --limit 0`, `bd count --status`, and the length of `bd blocked`. The status bar's ready count does the same (`bdReadyCount`)
-  - Never use `bd status` for counts: its `ready_issues` is `open − blocked`, and "blocked" also includes blocked *deferred* and *in_progress* beads, so it undercounts (a real database showed 1 ready while `bd ready` listed 4). The integration suite reproduces this
+  - **Tab counts always come from the same command as the tab's list** (`tabCounts` in `filter.ts`): `bd ready --limit 0`, `bd count --status`, and the length of `bd blocked`. A tab whose whole list is loaded counts its rows and costs no bd call. The status bar's ready count does the same (`bdReadyCount`)
+  - Never use `bd status` for counts: its `ready_issues` is `open − blocked`, and "blocked" also includes blocked *deferred* and *in_progress* beads, so it undercounts (on a real database of about 900 beads, it showed 1 ready while `bd ready` listed 4). The integration suite reproduces this
   - This is why `bd count` is used and `bd status` isn't: `bd count` takes the **same filter flags as the list** (`--assignee`, repeated `--label`, `--type`, `--no-assignee`), so a filtered count can't disagree with the filtered list. `bd status` takes no filter flags at all — it errors on `--assignee`
   - Counts are **per-pane**, because they follow that pane's filter. Only the status bar's unfiltered ready count is shared on the plugin (`plugin.readyCount`)
   - Dropdown choices load on demand, never on the auto-refresh timer
@@ -267,8 +269,8 @@ comments now exist), but these rules still hold:
   - **`applyRecord` must be given the pane's filter** (`inScope`, backed by `matchesFilter`). The lists it patches were read with that filter as bd flags, so without it a record would put a filtered-out bead on screen
   - Older bd, or the journal off, falls back to `fs.watch` + the refresh timer — the capability check decides, never a setting
 - **Inert text**: titles in the pane render as text, never HTML
-- Description, design, notes, acceptance criteria and comments render only through Obsidian's `MarkdownRenderer`. bd treats all of them as markdown
-- `<…>` outside code is escaped first (`mdtext.ts`), so CLI-style placeholders like `<this-id>` show literally, as they do in `bd show`
+- Description, design, notes, acceptance criteria and comments render only through `renderUntrustedMarkdown` (`untrusted.ts`), never `MarkdownRenderer` directly. Bead text arrives by sync from anyone, so it's untrusted. bd treats all of them as markdown
+- Every `<` is escaped before rendering and restored inside code afterwards, so CLI-style placeholders like `<this-id>` show literally, as they do in `bd show`, and no raw HTML reaches the parser
 - **One row component** (`row.ts`) serves both the pane and code blocks
 - **Lineage graph** (`docs/design/LINEAGE-GRAPH.md`):
   - Build the graph from `bd dep list` in both directions, never from `bd dep tree` (it drops edges and loses direction) or `bd graph --json` (it returns the whole component)

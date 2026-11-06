@@ -1,9 +1,9 @@
 # Beads for Obsidian
 
-A tiny, **desktop-only** Obsidian plugin that renders a **live, clickable pane** for the
+A **desktop-only** Obsidian plugin that renders a **live, clickable pane** for the
 [Beads (`bd`)](https://github.com/gastownhall/beads) issue tracker — and does *real*
-integration: click any issue to **edit it in a tab**, as YAML frontmatter + a markdown
-body, and save straight back to `bd`.
+integration: click any issue to **edit it in a tab**, with typed properties and
+markdown text fields, and save straight back to `bd`.
 
 No Obsidian + Beads plugin existed before this one — it fills a genuine gap for anyone
 who tracks work in `bd` and lives in Obsidian.
@@ -47,12 +47,15 @@ who tracks work in `bd` and lives in Obsidian.
 - 📄 **Live `beads` code blocks** — embed a query in any note (Dataview-style) and get
   the same clickable rows inline. See [Embedding queries](#embedding-queries-in-notes).
 - 🔢 **Status-bar count** — an ambient `● N ready` even when the pane is closed.
+- 🗃️ **Multiple projects** — keep several `bd` workspaces and switch between them with
+  *Beads: Switch project* or the dropdown in the pane header. See
+  [Multiple projects](#multiple-projects).
 - 🟢 **Live updates** — with Beads 1.3's events journal on, the pane follows `bd`'s own
   change feed and updates the moment a bead changes, from any terminal or agent. Without
   it, the pane refreshes on an interval and whenever `.beads/` changes on disk. See
   [Live updates](#live-updates).
-- ⚙️ **Near-zero setup** — if your vault folder itself contains a `.beads/`, the
-  project root auto-fills on first load.
+- ⚙️ **Near-zero setup** — if your vault folder itself contains a `.beads/` and no
+  project is set, it is added as your first project on load.
 
 ## Requirements
 
@@ -66,10 +69,9 @@ who tracks work in `bd` and lives in Obsidian.
 See **[docs/INSTALL.md](docs/INSTALL.md)** for all the options (BRAT, build and
 copy, dev symlink) and the post-install setup.
 
-This repo is the **Helixoid fork**. It carries work upstream hasn't merged yet
-(markdown text fields, the lineage graph, pane filters), so **upstream's
-releases don't contain those** — installing from upstream is a downgrade if
-you're already on a fork build.
+This repo is the **Helixoid fork**. Upstream has since merged its features
+(markdown text fields, the lineage graph, pane filters), so the fork currently
+differs from upstream only in its docs.
 
 ### From this fork, with updates (BRAT)
 
@@ -87,7 +89,7 @@ cp main.js manifest.json styles.css "<your-vault>/.obsidian/plugins/beads-pane/"
 Reload Obsidian and enable **Beads**. It's a copy, so a later rebuild doesn't
 reach the vault — re-run the `cp`.
 
-### Upstream (without this fork's features)
+### Upstream
 
 Settings → Community plugins → Browse → search **"Beads"** (once accepted), or
 download the three files from the
@@ -97,9 +99,9 @@ Beads is **desktop only** — it shells out to `bd`, so it won't load on mobile.
 
 ## Usage
 
-1. Open **Settings → Beads** and set **Project root** to a directory that contains a
-   `.beads/` database (auto-filled if your vault folder has one). Click **Test
-   connection** to confirm `bd` is reachable.
+1. Open **Settings → Beads**, click **Add project**, and set its path to a directory
+   that contains a `.beads/` database (added for you if your vault folder has one).
+   Click the project's **Test** to confirm `bd` is reachable.
 2. Open the pane: click the **list-checks** ribbon icon, or run **"Beads: Open pane"**
    from the command palette. Switch tabs (Ready / In progress / Blocked /
    Closed) and use **Load more** to page through long lists.
@@ -109,6 +111,19 @@ Beads is **desktop only** — it shells out to `bd`, so it won't load on mobile.
    Dependencies and the comment thread show below.
 4. Add new work anytime with **"Beads: New bead"** (bind it to a hotkey) or the `+` in
    the pane header.
+
+## Multiple projects
+
+Each project is a name and a directory containing `.beads/`. Add, rename, and remove
+them under **Settings → Beads → Projects**; names must be unique. One project is
+**active** at a time: the pane, its filters and counts, the status bar, and live updates
+all follow it. Switch with **Active project** in settings, *Beads: Switch project*, or
+the dropdown that appears in the pane header once you have two or more projects. With
+more than one, the status bar names the active project.
+
+A bead editor or lineage tab stays with the project it was opened from, so switching
+doesn't change what an open tab shows. Such a tab updates live only while its project
+is the active one.
 
 ## Embedding queries in notes
 
@@ -137,10 +152,12 @@ Accepted directives:
 | `list` | All open issues (`bd list`). |
 | `query: <expr>` | A [bd query](https://github.com/gastownhall/beads) expression, e.g. `status=open AND priority<=1`. |
 | `limit: <n>` | Max rows (clamped to 50). |
+| `project: <name>` | Read from this project instead of the active one. An unknown name is an error. |
 
 Embeds re-run when the note renders and when beads change (coalesced to at most twice a
 second) — never on a timer — and share a global read cache, so many blocks won't hammer
-`bd`.
+`bd`. Live changes come from the active project, so a block pinned to another project
+with `project:` re-runs only when the note renders.
 
 ## Live updates
 
@@ -187,7 +204,8 @@ local reader, it is still in preview, and today it refuses the default embedded 
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| Project root | *(empty)* | Absolute path to the directory containing `.beads/`. |
+| Active project | *(first project)* | The project the pane, status bar, and live updates follow. |
+| Projects | *(empty)* | A name and an absolute path to the directory containing `.beads/`, for each `bd` workspace. **Test** runs `bd --version` there. |
 | `bd` binary path | `bd` | Path to the `bd` executable. If not found, use the full path from `which bd` (see Troubleshooting). |
 | Auto-refresh interval | `30` | Seconds between refreshes (`0` disables). With live updates on, how often to check for changes the journal can't see, such as a sync. |
 | Live updates | — | Shows whether the pane is following the events journal, and offers to turn it on. |
@@ -195,11 +213,11 @@ local reader, it is still in preview, and today it refuses the default embedded 
 
 ## Troubleshooting
 
-- **"bd binary not found" / the pane is empty and *Test connection* fails.** GUI-launched
+- **"bd binary not found" / the pane is empty and a project's *Test* fails.** GUI-launched
   apps often don't inherit your shell `PATH`, so the default `bd` can't be resolved. Run
   `which bd` in a terminal and paste the full path into **Settings → Beads → bd binary
   path**.
-- **"No bd database here."** The project root must be a directory that contains a
+- **"No bd database here."** A project's path must be a directory that contains a
   `.beads/` folder. Point it at your `bd` project (not necessarily your vault).
 - **`bd` won't close a blocked issue.** It won't close an issue that still has open
   blockers; the error is shown as a notice. Close its blockers first (the editor tab
@@ -209,25 +227,34 @@ local reader, it is still in preview, and today it refuses the default embedded 
   the dot beside the pane title to see which mode it is in and why. With bd 1.3.0+, turn
   on [live updates](#live-updates).
 - **The status bar says "● bd error".** `bd` failed (not found, or the store is broken).
-  Hover it for the message, and use **Test connection** in settings.
+  Hover it for the message, and use the project's **Test** in settings.
 
 ## Security
 
-- The plugin runs the `bd` binary you configure, in the project root you configure —
+- The plugin runs the `bd` binary you configure, in the project directories you configure —
   the same trust model as the [Shell commands
   plugin](https://github.com/Taitava/obsidian-shellcommands). Point it only at a `bd`
   you trust.
 - Commands are invoked with `execFile` (or `spawn`, for the one long-lived
   `bd events tail`) and an **argument array** — never a shell string — so issue IDs and
   other values can't inject shell metacharacters.
-- Issue titles and descriptions render as plain text (never HTML) in the pane, so a bead
-  authored elsewhere and synced in can't inject markup. Comment threads in the editor
-  render through Obsidian's own `MarkdownRenderer` — the same sanitized path as any note.
-  Data-controlled values are also passed after a `--` sentinel (or as `--flag=value`) so
-  they can't be reparsed as `bd` flags.
-- The plugin runs `bd` against whatever `.beads/` your project root points at (including
+- Bead text is treated as untrusted, since it can come from anyone who writes to the
+  workspace, including by sync. Titles render as plain text. Descriptions, other text
+  fields and comments render as markdown with every `<` escaped (so no raw HTML), code-block
+  language tags dropped (so no other plugin's code block, such as `dataviewjs`, runs), and
+  links other than http(s) and mailto reduced to text. Markdown images still load, as in
+  any note. Data-controlled values are also passed after a `--` sentinel (or as
+  `--flag=value`) so they can't be reparsed as `bd` flags.
+- The plugin runs `bd` against whatever `.beads/` your projects point at (including
   an auto-detected vault-local one). It never executes anything *from* the dataset — but
   that means you trust `bd`'s own parsing of that database, as with any `bd` invocation.
+- What Obsidian's plugin review flags, and why: **process execution** (`child_process`)
+  is how the plugin talks to `bd`; **filesystem access** (`fs`) checks that a project
+  folder has a `.beads/` and watches it for changes; **clipboard** is write-only, for the
+  editor's copy-ID button. The plugin makes no network requests.
+- Releases are built by GitHub Actions from the tagged source, with a provenance
+  attestation for `main.js` and `styles.css`. To check a download:
+  `gh attestation verify main.js --repo Rome-1/obsidian-beads`.
 
 ## Development
 
@@ -235,7 +262,10 @@ local reader, it is still in preview, and today it refuses the default embedded 
 npm install
 npm run dev     # esbuild watch → main.js
 npm run build   # typecheck + production bundle
+npm test        # unit tests, plus integration tests when bd is on PATH (or BD_BIN)
 ```
+
+`npm test` needs Node 22.6 or later, which runs the TypeScript tests directly.
 
 To test against a real vault, symlink or copy `main.js`, `manifest.json`, and
 `styles.css` into `<vault>/.obsidian/plugins/beads-pane/`.
