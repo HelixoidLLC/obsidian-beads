@@ -51,6 +51,18 @@ Upstream: `https://github.com/Rome-1/obsidian-beads` (MIT). User docs: `README.m
   of fork-only docs (upstream removed this file) and version bumps, so the PR diff stays about the feature
 - `main` — tracks upstream's `main`, nothing of ours
 
+⚠️ **Never `git merge origin/main` into `helixoid/main`.** The fork's history was
+rewritten on 2026-11-07 to remove a client name. Upstream still holds the old
+commits, so a merge would bring the name straight back. Apply the diff instead:
+
+```bash
+git fetch origin
+git diff 91b2c91 origin/main | git apply --3way   # 91b2c91 = last upstream commit synced
+```
+
+- Commit the result and update the SHA above in the same commit
+- Tags named `0.x.y` in a local clone can be upstream's, fetched from `origin`. Check `git ls-remote --tags fork` for the fork's
+
 ## Repository Structure
 
 ```
@@ -295,7 +307,8 @@ comments now exist), but these rules still hold:
 See `docs/RELEASE.md`.
 
 - Bump `manifest.json`, `package.json`, and `versions.json`, then run `npm run build`
-- Run `gh release create <ver> main.js manifest.json styles.css`. The tag has **no `v` prefix**
+- Push an annotated tag to `fork`. `.github/workflows/release.yml` builds, attests and publishes (see `docs/INSTALL.md`). The tag has **no `v` prefix**
+- Never run `gh release create` here: it would collide with the workflow
 - Obsidian's developer dashboard re-scans each release automatically
 - Only on explicit user request
 

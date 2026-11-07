@@ -131,15 +131,25 @@ process is in [`RELEASE.md`](RELEASE.md); for a fork release:
 #   1. bump "version" in manifest.json and package.json
 #   2. add "<version>": "<minAppVersion>" to versions.json
 #   3. commit
-npm run build
-gh release create <version> main.js manifest.json styles.css \
-  --repo HelixoidLLC/obsidian-beads \
-  --title "<version>" --notes "…"
+git push fork helixoid/main
+git tag -a <version> -m "Release notes in markdown…"   # the message becomes the notes
+git push fork <version>
+```
+
+Pushing the tag runs `.github/workflows/release.yml`, which builds `main.js`,
+attests it and `styles.css`, and publishes the release. Don't run
+`gh release create` as well: it would collide with the workflow.
+
+Check a release with:
+
+```bash
+gh attestation verify main.js --repo HelixoidLLC/obsidian-beads
 ```
 
 The tag **must exactly match** `manifest.json`'s `version`, with **no `v`
-prefix** — BRAT and Obsidian both match on it. Attach the three files as
-individual assets.
+prefix** — BRAT and Obsidian both match on it, and the workflow fails if they
+differ. If `git tag` says the tag already exists, that's upstream's tag, fetched
+from `origin`.
 
 A new fork version must be higher than the last one released here, or BRAT
 won't offer it as an update. Upstream's numbers have caught up with the fork's
