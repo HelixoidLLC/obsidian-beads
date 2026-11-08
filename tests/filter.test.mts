@@ -16,7 +16,10 @@ import {
 	tabCounts,
 	isFilterActive,
 	matchesFilter,
+	matchesPriority,
 	parseFilter,
+	priorityCeilingLabel,
+	readyFiltersLocally,
 	type PaneFilter,
 } from "../src/filter.ts";
 import type { BeadIssue } from "../src/types.ts";
@@ -38,6 +41,29 @@ test("isFilterActive: empty is inactive; any single criterion activates it", () 
 	assert.equal(isFilterActive(f({ assignee: NO_ASSIGNEE })), true);
 	assert.equal(isFilterActive(f({ labels: ["x"] })), true);
 	assert.equal(isFilterActive(f({ type: "bug" })), true);
+	assert.equal(isFilterActive(f({ maxPriority: 0 })), true, "P0 only is a filter (0 is falsy)");
+});
+
+test("filterArgs: a priority ceiling is --priority-max for list/count, and nothing for ready", () => {
+	const p1 = f({ maxPriority: 1, type: "bug" });
+	assert.deepEqual(filterArgs(p1, "list"), ["--type=bug", "--priority-max=1"]);
+	assert.deepEqual(filterArgs(p1, "count"), ["--type=bug", "--priority-max=1"]);
+	assert.deepEqual(filterArgs(p1, "ready"), ["--type=bug"], "bd ready has no --priority-max");
+	assert.deepEqual(filterArgs(f({ maxPriority: 0 }), "list"), ["--priority-max=0"]);
+	assert.equal(readyFiltersLocally(p1), true);
+	assert.equal(readyFiltersLocally(f({ type: "bug" })), false, "other filters stay bd flags on ready");
+});
+
+test("matchesPriority / matchesFilter: the ceiling is inclusive, and 'any' lets everything through", () => {
+	for (const p of [0, 1, 2, 3, 4]) {
+		assert.equal(matchesPriority(issue({ priority: p }), f({ maxPriority: 1 })), p <= 1, `P${p} under P0–P1`);
+		assert.equal(matchesFilter(issue({ priority: p }), f({ maxPriority: 2 })), p <= 2, `P${p} under P0–P2`);
+		assert.ok(matchesPriority(issue({ priority: p }), f()), `P${p} with no ceiling`);
+	}
+	assert.ok(!matchesFilter(issue({ priority: 0, issue_type: "bug" }), f({ maxPriority: 0, type: "task" })), "criteria combine");
+	const noPriority = { ...issue(), priority: undefined } as unknown as BeadIssue;
+	assert.ok(!matchesPriority(noPriority, f({ maxPriority: 3 })), "a row without a priority can't be shown as P0–P3");
+	assert.ok(matchesPriority(noPriority, f()));
 });
 
 test("filterArgs: no filter → no flags", () => {
@@ -107,6 +133,11 @@ test("parseFilter restores saved state and drops malformed parts", () => {
 		parseFilter({ assignee: 3, labels: ["a", 1, "", "a", null], type: ["x"] }),
 		f({ labels: ["a"] }),
 	);
+	assert.deepEqual(parseFilter({ maxPriority: 0 }), f({ maxPriority: 0 }));
+	assert.deepEqual(parseFilter({ maxPriority: 3 }), f({ maxPriority: 3 }));
+	for (const bad of [4, -1, 1.5, "1", null, true]) {
+		assert.deepEqual(parseFilter({ maxPriority: bad }), f(), `maxPriority ${JSON.stringify(bad)}`);
+	}
 });
 
 test("parseFilter returns a fresh labels array (no shared EMPTY_FILTER state)", () => {
@@ -124,6 +155,9 @@ test("describeFilter summarises the active criteria", () => {
 		"assignee: alice · labels: a, b · type: bug",
 	);
 	assert.equal(describeFilter(f({ labels: ["a"] })), "label: a");
+	assert.equal(describeFilter(f({ maxPriority: 0 })), "priority: P0");
+	assert.equal(describeFilter(f({ type: "bug", maxPriority: 2 })), "type: bug · priority: P0–P2");
+	assert.equal(priorityCeilingLabel(1), "P0–P1");
 });
 
 // --- assignee box ------------------------------------------------------------
@@ -284,6 +318,20 @@ test("tabCounts: counts come from the same sources as the lists, with the filter
 		"count closed --no-assignee --label=x",
 		"count in_progress --no-assignee --label=x",
 		"ready --unassigned --label=x",
+	]);
+	// A priority ceiling: --priority-max for count, applied locally to bd ready's rows.
+	calls.length = 0;
+	const readyRows = [issue({ id: "r0", priority: 0 }), issue({ id: "r1", priority: 1 }), issue({ id: "r3", priority: 3 })];
+	const pri = await tabCounts(f({ maxPriority: 1 }), { ...src, ready: async (args: string[]) => {
+		calls.push(`ready ${args.join(" ")}`);
+		return readyRows;
+	} });
+	assert.equal(pri.ready_issues, 2, "P0 and P1 of the three ready rows");
+	assert.deepEqual(calls.sort(), [
+		"blocked",
+		"count closed --priority-max=1",
+		"count in_progress --priority-max=1",
+		"ready ",
 	]);
 	// A tab whose whole list is loaded is counted from its rows, with no bd call.
 	calls.length = 0;

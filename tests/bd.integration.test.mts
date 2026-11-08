@@ -36,6 +36,7 @@ import {
 	NO_ASSIGNEE,
 	filterArgs,
 	matchesFilter,
+	matchesPriority,
 	tabCounts,
 	type PaneFilter,
 } from "../src/filter.ts";
@@ -168,15 +169,16 @@ test("lineage over real bd keeps every edge of a diamond, oriented prerequisite 
 let seeded: Promise<void> | null = null;
 function seedFilterData(): Promise<void> {
 	seeded ??= (async () => {
-		const mk = (title: string, type: string, assignee?: string, labels?: string[]) =>
-			bdCreate(opts, { title, type, priority: 2, assignee, labels });
-		await mk("f-alice-bug-xy", "bug", "alice", ["fx", "fy"]);
-		await mk("f-bob-task-x", "task", "bob", ["fx"]);
-		await mk("f-none-task-y", "task", undefined, ["fy"]);
-		const blocker = await mk("f-none-feature", "feature");
-		const blocked = await mk("f-alice-task-x-blocked", "task", "alice", ["fx"]);
+		// Priorities spread over 0–3 so every priority ceiling splits the set.
+		const mk = (title: string, type: string, priority: number, assignee?: string, labels?: string[]) =>
+			bdCreate(opts, { title, type, priority, assignee, labels });
+		await mk("f-alice-bug-xy", "bug", 0, "alice", ["fx", "fy"]);
+		await mk("f-bob-task-x", "task", 1, "bob", ["fx"]);
+		await mk("f-none-task-y", "task", 3, undefined, ["fy"]);
+		const blocker = await mk("f-none-feature", "feature", 2);
+		const blocked = await mk("f-alice-task-x-blocked", "task", 1, "alice", ["fx"]);
 		bd("dep", "add", blocked, blocker);
-		const closed = await mk("f-alice-bug-x-closed", "bug", "alice", ["fx"]);
+		const closed = await mk("f-alice-bug-x-closed", "bug", 0, "alice", ["fx"]);
 		// `bd close` refuses a bead assigned to someone other than the actor
 		// (bd >= 1.3.0); `bd update --status=closed`, which the plugin uses, doesn't.
 		bd("update", closed, "--status=closed");
@@ -186,15 +188,24 @@ function seedFilterData(): Promise<void> {
 }
 
 const FILTERS: PaneFilter[] = [
-	{ assignee: "", labels: [], type: "" },
-	{ assignee: "alice", labels: [], type: "" },
-	{ assignee: NO_ASSIGNEE, labels: [], type: "" },
-	{ assignee: "", labels: ["fx"], type: "" },
-	{ assignee: "", labels: ["fx", "fy"], type: "" },
-	{ assignee: "", labels: [], type: "task" },
-	{ assignee: "alice", labels: ["fx"], type: "task" },
-	{ assignee: NO_ASSIGNEE, labels: ["fy"], type: "task" },
+	{ assignee: "", labels: [], type: "", maxPriority: null },
+	{ assignee: "alice", labels: [], type: "", maxPriority: null },
+	{ assignee: NO_ASSIGNEE, labels: [], type: "", maxPriority: null },
+	{ assignee: "", labels: ["fx"], type: "", maxPriority: null },
+	{ assignee: "", labels: ["fx", "fy"], type: "", maxPriority: null },
+	{ assignee: "", labels: [], type: "task", maxPriority: null },
+	{ assignee: "alice", labels: ["fx"], type: "task", maxPriority: null },
+	{ assignee: NO_ASSIGNEE, labels: ["fy"], type: "task", maxPriority: null },
+	{ assignee: "", labels: [], type: "", maxPriority: 0 },
+	{ assignee: "", labels: [], type: "", maxPriority: 1 },
+	{ assignee: "", labels: [], type: "", maxPriority: 2 },
+	{ assignee: "", labels: [], type: "", maxPriority: 3 },
+	{ assignee: "alice", labels: ["fx"], type: "", maxPriority: 1 },
+	{ assignee: NO_ASSIGNEE, labels: [], type: "task", maxPriority: 3 },
 ];
+/** The Ready tab's rows for a filter: bd's flags, then the local priority ceiling. */
+const readyFor = async (f: PaneFilter) =>
+	(await bdReady(opts, 0, filterArgs(f, "ready"))).filter((i) => matchesPriority(i, f));
 const ids = (issues: { id: string }[]) => issues.map((i) => i.id).sort();
 const label = (f: PaneFilter) => JSON.stringify(f);
 
@@ -207,12 +218,26 @@ test("bd's filter flags and the local matchesFilter agree (list, ready, count)",
 		const listed = await bdByStatus(opts, "open", 0, filterArgs(f, "list"));
 		assert.deepEqual(ids(listed), ids(allOpen.filter((i) => matchesFilter(i, f))), `list ${label(f)}`);
 
-		const ready = await bdReady(opts, 0, filterArgs(f, "ready"));
+		const ready = await readyFor(f);
 		assert.deepEqual(ids(ready), ids(allReady.filter((i) => matchesFilter(i, f))), `ready ${label(f)}`);
 
 		const closedCount = await bdCount(opts, "closed", filterArgs(f, "count"));
 		assert.equal(closedCount, allClosed.filter((i) => matchesFilter(i, f)).length, `count ${label(f)}`);
 	}
+});
+
+test("the Ready tab's local priority ceiling equals bd's own exact --priority, ceiling by ceiling", { skip }, async () => {
+	await seedFilterData();
+	// bd ready has only an exact --priority, so the union of 0..max is bd's answer.
+	for (const max of [0, 1, 2, 3]) {
+		const viaBd: { id: string }[] = [];
+		for (let p = 0; p <= max; p++) viaBd.push(...(await bdReady(opts, 0, [`--priority=${p}`])));
+		const local = await readyFor({ ...EMPTY_FILTER, labels: [], maxPriority: max });
+		assert.deepEqual(ids(local), ids(viaBd), `ready P0–P${max}`);
+	}
+	const p1 = await readyFor({ ...EMPTY_FILTER, labels: [], maxPriority: 1 });
+	assert.ok(p1.some((i) => i.title === "f-bob-task-x"), "a seeded P1 bead is ready under P0–P1");
+	assert.ok(!p1.some((i) => i.title === "f-none-task-y"), "a seeded P3 bead is not");
 });
 
 test("the Blocked tab's local filter selects exactly the blocked beads bd would list", { skip }, async () => {
@@ -299,7 +324,7 @@ test("tab counts equal list lengths, even with a blocked deferred bead (bd statu
 	};
 	for (const f of [{ ...EMPTY_FILTER, labels: [] }, ...FILTERS]) {
 		const counts = await tabCounts(f, src);
-		assert.equal(counts.ready_issues, (await bdReady(opts, 0, filterArgs(f, "ready"))).length, `ready ${label(f)}`);
+		assert.equal(counts.ready_issues, (await readyFor(f)).length, `ready ${label(f)}`);
 		assert.equal(
 			counts.in_progress_issues,
 			(await bdByStatus(opts, "in_progress", 0, filterArgs(f, "list"))).length,

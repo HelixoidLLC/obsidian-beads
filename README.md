@@ -21,8 +21,9 @@ who tracks work in `bd` and lives in Obsidian.
   criteria render as markdown (like `bd show`). Click one (or its pencil) to edit the
   raw text; Escape or click away to go back to the preview. Empty extra fields sit
   behind a `+ Notes` / `+ Design` / `+ Acceptance criteria` button.
-- 🔎 **Filter the pane** — the funnel icon opens an **assignee / type / labels** filter
-  bar (labels are AND: a bead must carry every chosen label). Filters apply to every
+- 🔎 **Filter the pane** — the funnel icon opens an **assignee / type / priority / labels**
+  filter bar (labels are AND: a bead must carry every chosen label; priority keeps that
+  priority and higher, e.g. **P0–P1**). Filters apply to every
   tab and its count, and are remembered with the workspace. **Assignee** is a text box:
   type any name and press Enter (or pick a suggestion); the **×** inside the box — or
   Enter on an empty box ("Anyone") — clears it. An exact match is always offered first. Names you use are remembered and listed first — **×** removes one from

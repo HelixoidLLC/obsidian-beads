@@ -2,13 +2,16 @@ import type { BeadIssue } from "./types";
 import type { TabKey } from "./journal";
 
 /**
- * The pane's filter: assignee, labels (AND — must have all), and type.
- * Pure (no Obsidian imports) so it's unit-testable.
+ * The pane's filter: assignee, labels (AND — must have all), type, and a
+ * priority ceiling ("this priority and higher"). Pure (no Obsidian imports) so
+ * it's unit-testable.
  *
  * bd does the filtering wherever it can (`bd ready`, `bd list`, `bd count` take
- * the same flags). The one exception is the Blocked tab: `bd blocked` has no
- * filter flags, so `matchesFilter` applies the same rules to its output —
- * pinned to bd's behaviour by tests/bd.integration.test.mts.
+ * the same flags). Two exceptions, both filtered locally with the same rules
+ * and pinned to bd's behaviour by tests/bd.integration.test.mts:
+ * - the Blocked tab: `bd blocked` has no filter flags (`matchesFilter`)
+ * - priority on the Ready tab: `bd ready` takes only an exact `--priority`, no
+ *   `--priority-max` (`matchesPriority`, see `readyFiltersLocally`)
  */
 export interface PaneFilter {
 	/** "" = anyone; NO_ASSIGNEE = unassigned only; else an exact assignee. */
@@ -17,15 +20,28 @@ export interface PaneFilter {
 	labels: string[];
 	/** "" = any type. */
 	type: string;
+	/**
+	 * Highest priority *number* shown (0 = critical … 4 = backlog), so 1 means
+	 * P0 and P1. null = any priority.
+	 */
+	maxPriority: number | null;
 }
 
 /** bd's own name for the unassigned group (`bd count --by-assignee`). */
 export const NO_ASSIGNEE = "(unassigned)";
 
-export const EMPTY_FILTER: PaneFilter = { assignee: "", labels: [], type: "" };
+export const EMPTY_FILTER: PaneFilter = { assignee: "", labels: [], type: "", maxPriority: null };
+
+/** The priority ceilings the pane offers. 4 would be "everything", so it isn't one. */
+export const PRIORITY_CEILINGS = [0, 1, 2, 3] as const;
 
 export function isFilterActive(f: PaneFilter): boolean {
-	return f.assignee !== "" || f.labels.length > 0 || f.type !== "";
+	return f.assignee !== "" || f.labels.length > 0 || f.type !== "" || f.maxPriority !== null;
+}
+
+/** "P0" for 0, else the range it covers, e.g. "P0–P2" for 2. */
+export function priorityCeilingLabel(max: number): string {
+	return max === 0 ? "P0" : `P0–P${max}`;
 }
 
 /**
@@ -42,7 +58,23 @@ export function filterArgs(f: PaneFilter, cmd: "ready" | "list" | "count"): stri
 	}
 	for (const l of f.labels) args.push(`--label=${l}`);
 	if (f.type) args.push(`--type=${f.type}`);
+	// `bd ready` has no --priority-max: that tab filters locally (readyFiltersLocally).
+	if (f.maxPriority !== null && cmd !== "ready") args.push(`--priority-max=${f.maxPriority}`);
 	return args;
+}
+
+/**
+ * Does the Ready tab have to filter bd's output itself? Only for priority:
+ * the list is then read whole (`bd ready --limit 0`) and paged locally, like
+ * the Blocked tab.
+ */
+export function readyFiltersLocally(f: PaneFilter): boolean {
+	return f.maxPriority !== null;
+}
+
+/** The priority part of the filter, matching bd's inclusive `--priority-max`. */
+export function matchesPriority(issue: BeadIssue, f: PaneFilter): boolean {
+	return f.maxPriority === null || (typeof issue.priority === "number" && issue.priority <= f.maxPriority);
 }
 
 /** Local equivalent of the bd flags above, for `bd blocked` output. */
@@ -54,7 +86,7 @@ export function matchesFilter(issue: BeadIssue, f: PaneFilter): boolean {
 	const labels = issue.labels ?? [];
 	if (!f.labels.every((l) => labels.includes(l))) return false;
 	if (f.type && issue.issue_type !== f.type) return false;
-	return true;
+	return matchesPriority(issue, f);
 }
 
 /** Restore a filter from saved view state, dropping anything malformed. */
@@ -65,15 +97,19 @@ export function parseFilter(raw: unknown): PaneFilter {
 	const labels = Array.isArray(r.labels)
 		? [...new Set(r.labels.filter((l): l is string => typeof l === "string" && l !== ""))]
 		: [];
-	return { assignee: str(r.assignee), labels, type: str(r.type) };
+	const max = r.maxPriority;
+	const maxPriority =
+		typeof max === "number" && (PRIORITY_CEILINGS as readonly number[]).includes(max) ? max : null;
+	return { assignee: str(r.assignee), labels, type: str(r.type), maxPriority };
 }
 
-/** Short human summary, e.g. `assignee: alice · label: a, b · type: bug`. */
+/** Short human summary, e.g. `assignee: alice · label: a, b · type: bug · priority: P0–P1`. */
 export function describeFilter(f: PaneFilter): string {
 	const bits: string[] = [];
 	if (f.assignee) bits.push(f.assignee === NO_ASSIGNEE ? "unassigned" : `assignee: ${f.assignee}`);
 	if (f.labels.length) bits.push(`${f.labels.length > 1 ? "labels" : "label"}: ${f.labels.join(", ")}`);
 	if (f.type) bits.push(`type: ${f.type}`);
+	if (f.maxPriority !== null) bits.push(`priority: ${priorityCeilingLabel(f.maxPriority)}`);
 	return bits.join(" · ");
 }
 
@@ -199,7 +235,7 @@ export function parsePatterns(raw: unknown): string[] {
 
 /** The bd calls `tabCounts` needs — injected so it stays pure and testable. */
 export interface CountSources {
-	/** `bd ready --limit 0 [flags]`. */
+	/** `bd ready --limit 0 [flags]` (priority is then applied locally, see readyFiltersLocally). */
 	ready(args: string[]): Promise<BeadIssue[]>;
 	/** `bd count --status <status> [flags]`. */
 	count(status: string, args: string[]): Promise<number>;
@@ -224,7 +260,8 @@ export async function tabCounts(
 	known: Partial<Record<TabKey, number>> = {},
 ): Promise<Record<string, number>> {
 	const [ready, inProgress, closed, blocked] = await Promise.all([
-		known.ready ?? src.ready(filterArgs(f, "ready")).then((l) => l.length),
+		known.ready ??
+			src.ready(filterArgs(f, "ready")).then((l) => l.filter((i) => matchesPriority(i, f)).length),
 		known.in_progress ?? src.count("in_progress", filterArgs(f, "count")),
 		known.closed ?? src.count("closed", filterArgs(f, "count")),
 		known.blocked ?? src.blocked().then((l) => l.filter((i) => matchesFilter(i, f)).length),

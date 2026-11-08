@@ -35,6 +35,7 @@ import { FeedStatus } from "./feed";
 import {
 	EMPTY_FILTER,
 	NO_ASSIGNEE,
+	PRIORITY_CEILINGS,
 	PaneFilter,
 	describeFilter,
 	filterArgs,
@@ -42,7 +43,10 @@ import {
 	hideAssignee,
 	isFilterActive,
 	matchesFilter,
+	matchesPriority,
 	parseFilter,
+	priorityCeilingLabel,
+	readyFiltersLocally,
 	rememberAssignee,
 	tabCounts,
 } from "./filter";
@@ -84,8 +88,9 @@ interface PaneState {
  * thousands of closed issues. Tab counts come from the same bd commands as the
  * lists (`tabCounts` — not `bd status`, whose ready count is wrong).
  *
- * Filters (assignee / labels / type) are passed to bd as flags, for the lists
- * and the counts alike. The filter is kept in the view state, so it survives
+ * Filters (assignee / labels / type / priority) are passed to bd as flags, for
+ * the lists and the counts alike — except where bd has no such flag (see
+ * filter.ts), and then the tab reads its whole list and filters it locally. The filter is kept in the view state, so it survives
  * reloads. Counts are per-view because they follow this pane's filter; an
  * unfiltered pane's ready count also feeds the status bar (`setReadyCount`).
  * A tab whose whole list is loaded is counted from its rows, not re-read.
@@ -209,6 +214,11 @@ export class BeadsView extends ItemView {
 	}
 
 	/** A tab's whole list is on screen: its count is its row count. */
+	/** Tabs that read their whole list and page it here (bd can't filter them). */
+	private pagedLocally(key: TabKey): boolean {
+		return key === "blocked" || (key === "ready" && readyFiltersLocally(this.filter));
+	}
+
 	private complete(key: TabKey): boolean {
 		const tab = this.tabs[key];
 		return tab.loaded && !tab.hasMore;
@@ -320,7 +330,12 @@ export class BeadsView extends ItemView {
 		const f = this.filter;
 		switch (key) {
 			case "ready":
-				return bdReady(opts, limit, filterArgs(f, "ready"));
+				// No --priority-max on `bd ready`: read it whole, filter + page here.
+				return readyFiltersLocally(f)
+					? bdReady(opts, 0, filterArgs(f, "ready")).then((all) =>
+							all.filter((i) => matchesPriority(i, f)),
+						)
+					: bdReady(opts, limit, filterArgs(f, "ready"));
 			case "in_progress":
 				return bdByStatus(opts, "in_progress", limit, filterArgs(f, "list"));
 			case "closed":
@@ -387,10 +402,12 @@ export class BeadsView extends ItemView {
 		tab.error = undefined;
 		this.render();
 		try {
+			// Read before the await: fetchTab chose its paging from this filter.
+			const pagedHere = this.pagedLocally(key);
 			const fetched = await this.fetchTab(key, opts, tab.limit);
 			if (mySeq !== this.loadSeq) return;
 			const sorted = byPriority(fetched);
-			if (key === "blocked") {
+			if (pagedHere) {
 				tab.hasMore = sorted.length > tab.limit;
 				tab.issues = sorted.slice(0, tab.limit);
 			} else {
@@ -454,6 +471,7 @@ export class BeadsView extends ItemView {
 	private filterUi: {
 		error: HTMLElement;
 		type: HTMLSelectElement;
+		priority: HTMLSelectElement;
 		addLabel: HTMLSelectElement;
 	} | null = null;
 
@@ -610,7 +628,7 @@ export class BeadsView extends ItemView {
 	}
 
 	/**
-	 * Assignee / type dropdowns and label chips. Every control applies on
+	 * Assignee box, type / priority dropdowns and label chips. Every control applies on
 	 * change (no free-typing), so the pane's full re-render can't eat input.
 	 */
 	private renderFilterBar(bar: HTMLElement, ok: boolean): void {
@@ -644,6 +662,12 @@ export class BeadsView extends ItemView {
 		// build time — two quick changes must both stick.
 		const type = this.filterSelect(row, "Type");
 		type.onchange = () => this.setFilter({ ...this.filter, type: type.value });
+		const priority = this.filterSelect(row, "Priority");
+		priority.onchange = () =>
+			this.setFilter({
+				...this.filter,
+				maxPriority: priority.value === "" ? null : Number(priority.value),
+			});
 
 		const labelRow = bar.createDiv({ cls: "beads-filter-row beads-labels" });
 		for (const l of f.labels) {
@@ -663,7 +687,7 @@ export class BeadsView extends ItemView {
 		};
 		if (isFilterActive(f)) this.clearButton(labelRow);
 
-		this.filterUi = { error, type, addLabel };
+		this.filterUi = { error, type, priority, addLabel };
 		this.fillFilterChoices();
 	}
 
@@ -687,6 +711,16 @@ export class BeadsView extends ItemView {
 			ui.type,
 			[{ value: "", label: "Any type" }, ...o.types.map((t) => ({ value: t, label: t }))],
 			f.type,
+		);
+		// Fixed choices (bd's priorities never change), kept here so the
+		// selection is set in the same place as the other dropdowns.
+		setOptions(
+			ui.priority,
+			[
+				{ value: "", label: "Any priority" },
+				...PRIORITY_CEILINGS.map((p) => ({ value: String(p), label: priorityCeilingLabel(p) })),
+			],
+			f.maxPriority === null ? "" : String(f.maxPriority),
 		);
 		setOptions(
 			ui.addLabel,

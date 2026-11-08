@@ -77,7 +77,7 @@ obsidian-beads/
 │   ├── projects.ts    # Pure helpers for the list of bd projects
 │   ├── node.d.ts      # Local types for the Node APIs in use (no @types/node)
 │   ├── editmodel.ts   # Pure editor model: bead → editable snapshot → minimal `bd update` diff
-│   ├── filter.ts      # Pure pane filter: assignee/labels/type → bd flags, local match for `bd blocked`, assignee suggestions
+│   ├── filter.ts      # Pure pane filter: assignee/labels/type/priority → bd flags, local match for `bd blocked` (and priority on `bd ready`), assignee suggestions
 │   ├── assignee-suggest.ts # Assignee box popup (AbstractInputSuggest): typed / Unassigned / saved (× to forget) / bd
 │   ├── lineage.ts     # Pure lineage walk (bd dep list up/down, fan-out folding, caps) + dagre layout
 │   ├── lineage-view.ts # Lineage graph ItemView: DOM-built SVG, pan/zoom, click to re-centre / open
@@ -232,7 +232,7 @@ in its `docs/` folder and at https://beads.gascity.com/. Installed here: `bd
 | `bd close <id> --reason "…"` | Close (refused while open blockers remain) |
 | `bd comments <id>` / `bd comments add <id> "text"` | Comment thread |
 | `bd status` | Counts: `summary.{ready_issues, blocked_issues, open_issues, …}`. ⚠️ `ready_issues` undercounts (see Pane filters); nothing on screen uses it — only the integration suite, to pin that bug |
-| `bd count --status <s> [--assignee/--label/--type/--no-assignee]` | A count with the **same filter flags as `bd list`**. No `--status ready`: ready isn't a stored status, so that silently returns 0 |
+| `bd count --status <s> [--assignee/--label/--type/--no-assignee/--priority-max]` | A count with the **same filter flags as `bd list`**. No `--status ready`: ready isn't a stored status, so that silently returns 0 |
 | `bd events tail [--follow] [--since n] [--limit n]` | The change journal (bd >= 1.3.0, `events-journal: true`). `bd config get/set events-journal` reads/writes it for the whole workspace |
 | `bd vc status --json` | The workspace's Dolt commit — the heartbeat for changes the journal never sees |
 | `bd prime` / `bd remember "…"` | Agent workflow context and persistent project memory |
@@ -260,9 +260,11 @@ comments now exist), but these rules still hold:
   - The integration suite runs every call in both formats
   - ⚠️ `TODO(1)` in `bd.ts`: the `bd events tail` line parsing and the truncation payload still use a raw `JSON.parse`. The enveloped shape of a JSONL stream is unverified (it needs bd >= 1.3.0, which wasn't installed at the time), so it was left as-is rather than guessed. `bd vc status --json` **is** confirmed to wrap, and `bdHeadCommit` goes through `parseJson` — an integration test pins it
 - **`bd` computes and the plugin displays.** Ready, Blocked, and In-progress each come from their own `bd` command. There are no local state files and no caches, except the code-block read cache (4 s TTL, one read at a time, limit clamped to 50, cleared on every mutation)
-- **Pane filters** (`filter.ts`) are passed to bd as flags: `bd ready` / `bd list` / `bd count` take `--assignee`, repeated `--label` (AND) and `--type`
+- **Pane filters** (`filter.ts`) are passed to bd as flags: `bd ready` / `bd list` / `bd count` take `--assignee`, repeated `--label` (AND) and `--type`; `bd list` / `bd count` also take `--priority-max` (inclusive) for the priority filter ("this priority and higher", `maxPriority`)
   - The unassigned flag is `--unassigned` for `ready` but `--no-assignee` for `list` / `count`
-  - **Only exception**: `bd blocked` has no filter flags, so the Blocked tab filters its output with `matchesFilter`. An integration test checks that rule gives the same results as bd's own flags
+  - **Exceptions**, both filtered locally and checked against bd's own flags by the integration suite:
+    - `bd blocked` has no filter flags, so the Blocked tab filters its output with `matchesFilter`
+    - `bd ready` has only an exact `--priority`, no `--priority-max`. With a priority filter set, the Ready tab reads `bd ready --limit 0` and applies `matchesPriority`, paging locally like Blocked (`readyFiltersLocally`, `pagedLocally`)
   - **Tab counts always come from the same command as the tab's list** (`tabCounts` in `filter.ts`): `bd ready --limit 0`, `bd count --status`, and the length of `bd blocked`. A tab whose whole list is loaded counts its rows and costs no bd call. The status bar's ready count does the same (`bdReadyCount`)
   - Never use `bd status` for counts: its `ready_issues` is `open − blocked`, and "blocked" also includes blocked *deferred* and *in_progress* beads, so it undercounts (on a real database of about 900 beads, it showed 1 ready while `bd ready` listed 4). The integration suite reproduces this
   - This is why `bd count` is used and `bd status` isn't: `bd count` takes the **same filter flags as the list** (`--assignee`, repeated `--label`, `--type`, `--no-assignee`), so a filtered count can't disagree with the filtered list. `bd status` takes no filter flags at all — it errors on `--assignee`
