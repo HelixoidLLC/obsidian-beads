@@ -18,6 +18,8 @@ import {
 	bdLabelNames,
 	bdAssigneeNames,
 	bdTypeNames,
+	bdQueryAll,
+	bdSearch,
 	BdError,
 	BdOptions,
 } from "./bd";
@@ -50,6 +52,7 @@ import {
 	rememberAssignee,
 	tabCounts,
 } from "./filter";
+import { searchBeads, searchWords } from "./search";
 
 interface TabDef {
 	key: TabKey;
@@ -66,6 +69,14 @@ const TABS: TabDef[] = [
 const PAGE = 25;
 
 interface TabState extends TabList {
+	limit: number;
+	loading: boolean;
+	error?: string;
+}
+
+/** The search box's results; while it has text they replace the tabs. */
+interface SearchState {
+	issues: BeadIssue[];
 	limit: number;
 	loading: boolean;
 	error?: string;
@@ -120,6 +131,14 @@ export class BeadsView extends ItemView {
 	private seen = new Map<string, string>();
 	/** The root the loaded tabs, counts, and filter choices came from. */
 	private shownRoot: string | null = null;
+	/** Not saved in the view state: reopening shows the tabs, not an old search. */
+	private searchText = "";
+	private search: SearchState = { issues: [], limit: PAGE, loading: false };
+	private searchSeq = 0;
+	private searchAbort: AbortController | null = null;
+	private searchTimer: number | null = null;
+	/** Records arrived during a search; run it once more when it finishes. */
+	private searchAgain = false;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -168,6 +187,7 @@ export class BeadsView extends ItemView {
 		if (this.reloadTimer !== null) window.clearTimeout(this.reloadTimer);
 		if (this.countsTimer !== null) window.clearTimeout(this.countsTimer);
 		for (const t of TABS) this.tabs[t.key] = this.emptyTab();
+		this.dropSearch();
 	}
 
 	/** Apply journal records to the loaded tabs; re-read only what bd must settle. */
@@ -196,12 +216,21 @@ export class BeadsView extends ItemView {
 				void this.loadTab(this.active);
 			}, 250);
 		}
+		if (this.isSearching()) {
+			if (this.search.loading) this.searchAgain = true;
+			else this.scheduleSearch(300);
+		}
 		this.render();
 	}
 
 	/** No filter: this pane's ready count is the status bar's too. */
 	isUnfiltered(): boolean {
 		return !isFilterActive(this.filter);
+	}
+
+	/** The palette's search uses this pane's filter. */
+	currentFilter(): PaneFilter {
+		return this.filter;
 	}
 
 	/** Coalesce recounts: one read per burst of journal records. */
@@ -245,6 +274,7 @@ export class BeadsView extends ItemView {
 			this.options = null;
 			this.optionsError = null;
 			this.filterBarKey = ""; // rebuild the bar, so open choices reload
+			this.dropSearch(); // the plugin's refresh on a new root searches again
 		}
 		this.shownRoot = root;
 		this.render();
@@ -268,6 +298,10 @@ export class BeadsView extends ItemView {
 		if (!opts) {
 			this.render();
 			return;
+		}
+		if (this.isSearching()) {
+			this.search.limit = PAGE;
+			void this.loadSearch();
 		}
 		// List first: if it fits in one page, its length is the tab's count.
 		await this.loadTab(this.active);
@@ -345,6 +379,82 @@ export class BeadsView extends ItemView {
 				return bdBlocked(opts).then((all) => all.filter((i) => matchesFilter(i, f)));
 			default:
 				return Promise.resolve([]);
+		}
+	}
+
+	// --- search ---------------------------------------------------------
+
+	private isSearching(): boolean {
+		return searchWords(this.searchText).length > 0;
+	}
+
+	/** Forget the results and cancel anything pending; the box's text stays. */
+	private dropSearch(): void {
+		if (this.searchTimer !== null) window.clearTimeout(this.searchTimer);
+		this.searchTimer = null;
+		this.searchAbort?.abort();
+		this.searchAbort = null;
+		this.searchSeq++; // a search still in flight must not land
+		this.searchAgain = false;
+		this.search = { issues: [], limit: PAGE, loading: false };
+	}
+
+	/** Coalesced: a pending run stays put, so steady writes can't postpone it forever. */
+	private scheduleSearch(delayMs: number): void {
+		if (this.searchTimer !== null) return;
+		this.searchTimer = window.setTimeout(() => {
+			this.searchTimer = null;
+			void this.loadSearch();
+		}, delayMs);
+	}
+
+	private onSearchInput(text: string): void {
+		this.searchText = text;
+		if (this.searchTimer !== null) window.clearTimeout(this.searchTimer);
+		this.searchTimer = null;
+		if (this.isSearching()) {
+			this.search.limit = PAGE;
+			this.search.loading = true;
+			this.scheduleSearch(200);
+		} else {
+			this.dropSearch();
+		}
+		this.render();
+	}
+
+	private async loadSearch(): Promise<void> {
+		if (!this.isSearching()) return;
+		const opts = this.resolveOpts();
+		if (!opts) {
+			this.render();
+			return;
+		}
+		this.searchAbort?.abort();
+		const abort = new AbortController();
+		this.searchAbort = abort;
+		const seq = ++this.searchSeq;
+		const signalled = { ...opts, signal: abort.signal };
+		this.search.loading = true;
+		this.search.error = undefined;
+		this.render();
+		try {
+			const f = this.filter;
+			const issues = await searchBeads(this.searchText, (i) => matchesFilter(i, f), {
+				query: (expr) => bdQueryAll(signalled, expr),
+				search: (word) => bdSearch(signalled, word),
+			});
+			if (seq === this.searchSeq) this.search.issues = issues;
+		} catch (e) {
+			if (seq === this.searchSeq) this.search.error = e instanceof BdError ? e.message : String(e);
+		} finally {
+			if (seq === this.searchSeq) {
+				this.search.loading = false;
+				this.render();
+				if (this.searchAgain) {
+					this.searchAgain = false;
+					this.scheduleSearch(300);
+				}
+			}
 		}
 	}
 
@@ -452,6 +562,8 @@ export class BeadsView extends ItemView {
 	private shell: {
 		notice: HTMLElement;
 		filters: HTMLElement;
+		/** The search box; built once so a refresh never touches what's typed. */
+		searchRow: HTMLElement;
 		tabBar: HTMLElement;
 		tabs: Record<string, { btn: HTMLButtonElement; count: HTMLElement }>;
 		body: HTMLElement;
@@ -489,7 +601,10 @@ export class BeadsView extends ItemView {
 		const active = isFilterActive(this.filter);
 		shell.filterBtn.setAttr("aria-label", active ? `Filter: ${describeFilter(this.filter)}` : "Filter");
 		shell.filterBtn.toggleClass("is-active", active || this.showFilters);
-		shell.refreshBtn.toggleClass("beads-spin", this.tabs[this.active].loading);
+		shell.refreshBtn.toggleClass(
+			"beads-spin",
+			this.isSearching() ? this.search.loading : this.tabs[this.active].loading,
+		);
 		this.renderLive(shell.live);
 		this.renderProjectSelect(shell.project);
 
@@ -502,7 +617,8 @@ export class BeadsView extends ItemView {
 					: "",
 		);
 		shell.notice.toggle(!ok);
-		shell.tabBar.toggle(ok);
+		shell.searchRow.toggle(ok);
+		shell.tabBar.toggle(ok && !this.isSearching());
 		shell.body.toggle(ok);
 		shell.offer.toggle(ok);
 		if (ok) this.renderJournalOffer(shell.offer);
@@ -567,6 +683,8 @@ export class BeadsView extends ItemView {
 		};
 
 		const notice = root.createDiv({ cls: "beads-empty" });
+		const searchRow = root.createDiv({ cls: "beads-search" });
+		this.buildSearchBox(searchRow);
 		const filters = root.createDiv({ cls: "beads-filters" });
 		const tabBar = root.createDiv({ cls: "beads-tabs" });
 		const tabs: Record<string, { btn: HTMLButtonElement; count: HTMLElement }> = {};
@@ -580,13 +698,75 @@ export class BeadsView extends ItemView {
 		const offer = root.createDiv({ cls: "beads-offer-slot" });
 		const body = root.createDiv({ cls: "beads-tab-body" });
 
-		this.shell = { notice, filters, tabBar, tabs, body, filterBtn, refreshBtn, live, offer, project };
+		this.shell = { notice, filters, searchRow, tabBar, tabs, body, filterBtn, refreshBtn, live, offer, project };
 		return this.shell;
 	}
 
-	/** The active tab's list (or its empty / loading / error state). */
+	private buildSearchBox(parent: HTMLElement): void {
+		const wrap = parent.createDiv({ cls: "beads-filter-inputwrap" });
+		const input = wrap.createEl("input", {
+			cls: "beads-filter-select beads-filter-input",
+			type: "text",
+			attr: { "aria-label": "Search beads", placeholder: "Search beads…", spellcheck: "false" },
+		});
+		input.value = this.searchText;
+		const clear = wrap.createSpan({
+			cls: "beads-filter-inputclear",
+			text: "×",
+			attr: { "aria-label": "Clear search" },
+		});
+		const apply = (text: string) => {
+			input.value = text;
+			clear.toggle(text !== "");
+			this.onSearchInput(text);
+		};
+		clear.toggle(input.value !== "");
+		input.addEventListener("input", () => apply(input.value));
+		input.addEventListener("keydown", (e) => {
+			if (e.key === "Escape") apply("");
+		});
+		clear.addEventListener("click", () => {
+			apply("");
+			input.focus();
+		});
+	}
+
+	/** Search results (every status), paged here: bd returned all of them. */
+	private renderSearch(body: HTMLElement): void {
+		const { issues, limit, loading, error } = this.search;
+		if (error) {
+			body.createDiv({ cls: "beads-empty beads-error", text: error });
+			return;
+		}
+		if (issues.length === 0) {
+			const none = isFilterActive(this.filter) ? "No beads match the search and filter." : "No beads match.";
+			body.createDiv({ cls: "beads-empty", text: loading ? "Searching…" : none });
+			return;
+		}
+		body.createDiv({
+			cls: "beads-search-count",
+			text: `${issues.length} ${issues.length === 1 ? "result" : "results"}`,
+		});
+		const list = body.createDiv({ cls: "beads-list" });
+		for (const issue of issues.slice(0, limit)) {
+			renderIssueRow(list, issue, { onOpen: (i) => this.openBead(i), showStatus: true });
+		}
+		if (issues.length > limit) {
+			const more = body.createEl("button", { cls: "beads-loadmore", text: "Load more" });
+			more.onclick = () => {
+				this.search.limit += PAGE;
+				this.render();
+			};
+		}
+	}
+
+	/** The search results, or the active tab's list (or its empty / loading / error state). */
 	private renderBody(body: HTMLElement): void {
 		body.empty();
+		if (this.isSearching()) {
+			this.renderSearch(body);
+			return;
+		}
 		const tab = this.tabs[this.active];
 
 		if (tab.error) {

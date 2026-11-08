@@ -21,6 +21,9 @@ who tracks work in `bd` and lives in Obsidian.
   criteria render as markdown (like `bd show`). Click one (or its pencil) to edit the
   raw text; Escape or click away to go back to the preview. Empty extra fields sit
   behind a `+ Notes` / `+ Design` / `+ Acceptance criteria` button.
+- 🔍 **Search** — the box at the top of the pane, or **Beads: Search** in the command
+  palette, finds beads in every status by ID (the part after the prefix is enough), title,
+  description or notes. Every word has to match, in any order; the pane's filters apply.
 - 🔎 **Filter the pane** — the funnel icon opens an **assignee / type / priority / labels**
   filter bar (labels are AND: a bead must carry every chosen label; priority keeps that
   priority and higher, e.g. **P0–P1**). Filters apply to every

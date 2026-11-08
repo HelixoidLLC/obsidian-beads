@@ -78,6 +78,8 @@ obsidian-beads/
 │   ├── node.d.ts      # Local types for the Node APIs in use (no @types/node)
 │   ├── editmodel.ts   # Pure editor model: bead → editable snapshot → minimal `bd update` diff
 │   ├── filter.ts      # Pure pane filter: assignee/labels/type/priority → bd flags, local match for `bd blocked` (and priority on `bd ready`), assignee suggestions
+│   ├── search.ts      # Pure free-form search: bd query expression, literal match, merge with bd search, ranking
+│   ├── search-modal.ts # "Search" in the command palette (SuggestModal over search.ts)
 │   ├── assignee-suggest.ts # Assignee box popup (AbstractInputSuggest): typed / Unassigned / saved (× to forget) / bd
 │   ├── lineage.ts     # Pure lineage walk (bd dep list up/down, fan-out folding, caps) + dagre layout
 │   ├── lineage-view.ts # Lineage graph ItemView: DOM-built SVG, pan/zoom, click to re-centre / open
@@ -117,13 +119,14 @@ npm run test:coverage  # same, with a per-file coverage table
 
 - **Test layout**: tests live in `tests/*.test.mts` and use `node:test` + `node:assert/strict`. There's no test framework; Node 22.6+ strips TS types natively
 - **Unit tests** cover pure modules only, i.e. modules that never import `obsidian`:
-  - `editmodel.ts`, `filter.ts`, `projects.ts`, `lineage.ts` (the walk, the layout and the view geometry), `journal.ts`
+  - `editmodel.ts`, `filter.ts`, `search.ts`, `projects.ts`, `lineage.ts` (the walk, the layout and the view geometry), `journal.ts`
   - `buildUpdateArgs` and the JSON parsers (`parse*`) in `bd.ts`
   - Keep logic testable by moving it into pure modules. The views should only wire DOM to it
 - **Integration tests** (`tests/bd.integration.test.mts`) run the **real `bd`** against a throwaway database in the OS temp dir. They skip when `bd` isn't on `PATH`; set `BD_BIN` to use another binary
 - **Rules for test-imported modules**:
   - use `import type` for type-only imports (Node can't strip a value import of an interface)
   - no TS-only runtime syntax such as constructor parameter properties or enums
+  - no relative value imports between them: Node can't resolve the extensionless path. Inject instead, as `applyRecord` (`inScope`) and `searchBeads` do
 - **UI** (`mdfield.ts`, `lineage-view.ts`, `editor.ts`, `main.ts`) still needs a manual check in a real vault (see below). `obsidian eval code=…` can drive the views and inspect the DOM
 
 ## Installing the Local Copy into Obsidian (dev loop)
@@ -226,6 +229,7 @@ in its `docs/` folder and at https://beads.gascity.com/. Installed here: `bd
 | `bd blocked` | Issues waiting on deps (includes `blocked_by[]`, `blocked_by_count`) |
 | `bd list --status <s> [--limit n] --no-pager` | List by stored status |
 | `bd query "<expr>" [--limit n] [-a]` | Query language, e.g. `status=open AND priority<=1`, `updated>7d`, `label=x OR type=bug`, `NOT status=closed`. Excludes closed unless `-a` |
+| `bd search --query=<text> [--limit n]` | Title and ID substrings, closed included. Takes the same filter flags as `bd list`. ⚠️ A full ID with an uppercase prefix (`CTM-i99`) finds nothing; the suffix does |
 | `bd show <id>` | One issue (JSON is an array) |
 | `bd create --title=… --type=… --priority=… [--description=…] [--parent <id>] [--labels=a,b]` | New issue, returns `{id,…}` |
 | `bd update <id> --title/--description/--priority/--type/--status/--assignee/--add-label/--remove-label/--claim` | Edit fields (`--claim` sets you as assignee and status `in_progress`) |
@@ -272,6 +276,14 @@ comments now exist), but these rules still hold:
   - Dropdown choices load on demand, never on the auto-refresh timer
   - Saved assignee names (`settings.savedAssignees`, at most 50, most recent first) and hidden patterns (`settings.hiddenAssignees`, exact names or `*` globs) are the one exception to the "no local state" rule. They're lists the user curates, stored in the plugin settings, and bd stays the source of truth for assignees
   - Hidden patterns only affect the suggestions. They never stop a typed name from filtering
+- **Search** (`search.ts`) is one path for the pane box and the palette: every word must appear, in any order, in the ID, title, description or notes, across all statuses
+  - `bd query -a` with `(title="w" OR description="w" OR notes="w" OR id="w")` per word, ANDed. Only `bd query` can OR across fields. Inside an OR it matches literally, ignoring ASCII case; `\\` and `\"` are its escapes
+  - `bd search` too for a single word, because it's the only command that finds part of an ID
+  - `%` and `_` are wildcards in `bd search`, and in a lone `bd query` clause, with no escape. `matchesWords` keeps only literal hits, so it can only narrow bd's answer
+  - `description="none"` means "has no description", so the word `none` reads every bead (`id="*"`) and relies on `matchesWords`
+  - `bd query` has no filter flags, so the pane filter is applied with `matchesFilter`. The palette uses the first open pane's filter and shows it in the modal
+  - Design, acceptance and comments aren't searched: `bd query` has no such fields. `bd export --all` carries them, if that's ever wanted. `bd sql` isn't available in embedded mode
+  - The search box is built once in `ensureShell()`, like the rest of the shell. Search text isn't saved in the view state
 - **Pane rendering** (`view.ts`): build the header, filter bar and tab bar **once** and update them in place (`render()` → `ensureShell()`)
   - Only the bead list (`renderBody`) is rebuilt on each load
   - The filter bar is rebuilt only when `filterBarKey` changes (the filter, or the option list loading)
@@ -298,7 +310,7 @@ comments now exist), but these rules still hold:
 
 ## Development Conventions
 
-- **TypeScript strict**, tabs for indentation, following the style of the existing modules. Keep files under ~600 lines (`editor.ts` is ~660 and next in line to be split)
+- **TypeScript strict**, tabs for indentation, following the style of the existing modules. Keep files under ~600 lines (`view.ts`, at ~1140, is the first to split; `editor.ts` is ~650)
 - **Never save working files or notes in the repo root.** Docs go in `docs/` and scripts in `scripts/`
 - Run `npm run lint` before handing work back. `eslint-plugin-obsidianmd` mirrors the automated review rules of Obsidian's community directory, so a lint error can block a release
 - Use Obsidian APIs (`requestUrl`, `normalizePath`, `registerEvent`, `register*`) so everything is cleaned up in `onunload`

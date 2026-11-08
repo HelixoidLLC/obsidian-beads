@@ -18,7 +18,8 @@ import { BdOptions, bdReadyCount, invalidateReadCache } from "./bd";
 import { registerBeadsCodeBlock } from "./codeblock";
 import { BeadsFeed, FeedStatus } from "./feed";
 import { JournalRecord, affectsCounts } from "./journal";
-import { parsePatterns, parseSavedAssignees } from "./filter";
+import { EMPTY_FILTER, parsePatterns, parseSavedAssignees } from "./filter";
+import { BeadSearchModal } from "./search-modal";
 import { BeadsProject, migrateProjects, projectFor } from "./projects";
 
 export default class BeadsPlugin extends Plugin {
@@ -83,6 +84,19 @@ export default class BeadsPlugin extends Plugin {
 			id: "new-bead",
 			name: "New bead",
 			callback: () => void this.newBead(),
+		});
+
+		this.addCommand({
+			id: "search",
+			name: "Search",
+			checkCallback: (checking) => {
+				if (!this.bdOptions()) return false;
+				if (!checking) {
+					const filter = this.panes()[0]?.currentFilter() ?? EMPTY_FILTER;
+					new BeadSearchModal(this.app, this, filter).open();
+				}
+				return true;
+			},
 		});
 
 		this.addCommand({

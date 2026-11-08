@@ -13,6 +13,8 @@ export interface RowHandlers {
 	onOpen: (issue: BeadIssue) => void;
 	/** Show a "⛓ n" dependency-count hint (blocked list only). */
 	showDeps?: boolean;
+	/** Show the stored status (search results mix every status). */
+	showStatus?: boolean;
 }
 
 /** A small colored priority dot (native-restrained) with the label on hover. */
@@ -46,6 +48,9 @@ export function renderIssueRow(
 	meta.createSpan({ cls: "beads-id", text: issue.id });
 	if (issue.issue_type) {
 		meta.createSpan({ cls: "beads-type", text: issue.issue_type });
+	}
+	if (handlers.showStatus && issue.status) {
+		meta.createSpan({ cls: "beads-status", text: issue.status.replace(/_/g, " ") });
 	}
 	const deps = issue.blocked_by_count ?? issue.dependency_count ?? 0;
 	if (handlers.showDeps && deps > 0) {

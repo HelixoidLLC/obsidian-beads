@@ -62,6 +62,17 @@
 	font-weight: var(--font-normal);
 }
 
+/* Search box and its result count */
+.beads-search {
+	display: flex;
+	padding: 2px 8px 6px;
+}
+.beads-search-count {
+	padding: 2px 8px 4px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
 /* Filter bar (assignee / type / labels) */
 .beads-filters {
 	display: flex;

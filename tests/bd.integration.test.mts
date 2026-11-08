@@ -22,6 +22,8 @@ import {
 	bdDepList,
 	bdLabelNames,
 	bdHeadCommit,
+	bdQueryAll,
+	bdSearch,
 	bdReady,
 	bdShow,
 	bdReadyCount,
@@ -40,6 +42,7 @@ import {
 	tabCounts,
 	type PaneFilter,
 } from "../src/filter.ts";
+import { searchBeads } from "../src/search.ts";
 
 const BD = process.env.BD_BIN ?? "bd";
 /**
@@ -208,6 +211,12 @@ const readyFor = async (f: PaneFilter) =>
 	(await bdReady(opts, 0, filterArgs(f, "ready"))).filter((i) => matchesPriority(i, f));
 const ids = (issues: { id: string }[]) => issues.map((i) => i.id).sort();
 const label = (f: PaneFilter) => JSON.stringify(f);
+/** The whole search path over real bd. `opts` is read per call, for withEnvelope. */
+const find = (text: string, f: PaneFilter = EMPTY_FILTER, o?: BdOptions) =>
+	searchBeads(text, (i) => matchesFilter(i, f), {
+		query: (expr) => bdQueryAll(o ?? opts, expr),
+		search: (word) => bdSearch(o ?? opts, word),
+	});
 
 test("bd's filter flags and the local matchesFilter agree (list, ready, count)", { skip }, async () => {
 	await seedFilterData();
@@ -255,6 +264,126 @@ test("the Blocked tab's local filter selects exactly the blocked beads bd would 
 	}
 });
 
+// --- search --------------------------------------------------------------------
+
+let searchSeeded: Promise<Record<string, string>> | null = null;
+function seedSearchData(): Promise<Record<string, string>> {
+	searchSeeded ??= (async () => {
+		const mk = async (
+			title: string,
+			type: string,
+			priority: number,
+			extra: { description?: string; notes?: string; assignee?: string; labels?: string[] } = {},
+		) => {
+			const { notes, ...fields } = extra;
+			const id = await bdCreate(opts, { title, type, priority, ...fields });
+			if (notes) await bdUpdate(opts, id, { notes });
+			return id;
+		};
+		const inTitle = await mk("sx-alpha login page", "bug", 0, {
+			description: "sx-beta redirect fails",
+			assignee: "alice",
+			labels: ["fx"],
+		});
+		const inNotes = await mk("sx refactor", "task", 1, { notes: "sx-alpha tokens", assignee: "bob", labels: ["fx"] });
+		const inDescription = await mk("sx rollout", "feature", 2, { description: "uses sx-alpha", labels: ["fy"] });
+		const closed = await mk("sx-alpha archive", "task", 3);
+		bd("update", closed, "--status=closed");
+		const percent = await mk('sy 100% done_ok back\\slash say "hello', "task", 2);
+		const lookalike = await mk("sy 100 percent doneXok", "task", 2);
+		const trailing = await mk("sy ends in abc\\", "task", 2);
+		const noneInText = await mk("sy nothing", "task", 2, { description: "there are none left" });
+		const noText = await mk("sy blank", "task", 2);
+		const slashInText = await mk("sy path", "task", 2, { description: "at c:\\temp\\dir" });
+		const parent = await mk("sy parent", "epic", 2);
+		const child = (JSON.parse(bd("create", "--title=sy child", `--parent=${parent}`, "--json")) as { id: string }).id;
+		return { inTitle, inNotes, inDescription, closed, percent, lookalike, trailing, noneInText, noText, slashInText, parent, child };
+	})();
+	return searchSeeded;
+}
+
+test("search equals bd's own per-field results, for every filter", { skip }, async () => {
+	await seedSearchData();
+	await seedFilterData();
+	for (const term of ["sx-alpha", "redirect"]) {
+		for (const f of FILTERS) {
+			const viaFlags = new Set<string>();
+			for (const field of ["--title-contains", "--desc-contains", "--notes-contains"]) {
+				const rows = bd("list", "--all", "--limit", "0", "--no-pager", "--json", `${field}=${term}`, ...filterArgs(f, "list"));
+				for (const r of JSON.parse(rows) as { id: string }[]) viaFlags.add(r.id);
+			}
+			assert.deepEqual(ids(await find(term, f)), [...viaFlags].sort(), `${term} ${label(f)}`);
+		}
+	}
+});
+
+test("search finds words in any order and across fields", { skip }, async () => {
+	const s = await seedSearchData();
+	assert.deepEqual(ids(await find("login redirect")), [s.inTitle]);
+	assert.deepEqual(ids(await find("REDIRECT page")), [s.inTitle], "order and case don't matter");
+	assert.deepEqual(ids(await find("login tokens")), [], "both words must be in the same bead");
+});
+
+test("search includes closed beads and reports their status", { skip }, async () => {
+	const s = await seedSearchData();
+	const hit = (await find("sx-alpha")).find((i) => i.id === s.closed);
+	assert.equal(hit?.status, "closed");
+});
+
+test("search takes wildcard and quoting characters literally", { skip }, async () => {
+	const s = await seedSearchData();
+	const includesOnly = async (text: string, want: string, not: string) => {
+		const found = ids(await find(text));
+		assert.ok(found.includes(want), `${text} should find ${want}: ${found.join()}`);
+		assert.ok(!found.includes(not), `${text} should not find ${not}: ${found.join()}`);
+	};
+	await includesOnly("100%", s.percent, s.lookalike);
+	await includesOnly("%", s.percent, s.lookalike);
+	await includesOnly("done_ok", s.percent, s.lookalike);
+	await includesOnly("back\\slash", s.percent, s.lookalike);
+	await includesOnly("abc\\", s.trailing, s.lookalike);
+	await includesOnly('say "hello', s.percent, s.lookalike);
+	await includesOnly("c:\\temp", s.slashInText, s.lookalike);
+	assert.deepEqual(ids(await find("*")), [], "no title has a star, and id= mustn't expand it");
+	assert.deepEqual(ids(await find('"')).includes(s.percent), true, "a lone quote is a valid search");
+});
+
+test('searching "none" finds the word, not beads with an empty description', { skip }, async () => {
+	const s = await seedSearchData();
+	const found = ids(await find("none"));
+	assert.ok(found.includes(s.noneInText), found.join());
+	assert.ok(!found.includes(s.noText), found.join());
+	assert.deepEqual(ids(await find("left none")), [s.noneInText], "and as one word of several");
+});
+
+test("search finds pieces of an id, including a child's", { skip }, async () => {
+	const s = await seedSearchData();
+	const suffix = (id: string) => id.slice(id.indexOf("-") + 1);
+	assert.ok(ids(await find(suffix(s.inTitle))).includes(s.inTitle));
+	assert.ok(ids(await find(suffix(s.child))).includes(s.child));
+	assert.equal((await find(s.child))[0].id, s.child, "an ID match ranks first");
+});
+
+test("a pasted full id is found with an uppercase prefix, where bd search alone misses it", { skip }, async () => {
+	const upper = mkdtempSync(join(tmpdir(), "obsidian-beads-it-upper-"));
+	try {
+		execFileSync(BD, ["init", "--quiet", "--stealth", "--skip-agents", "--prefix", "CTM"], {
+			cwd: upper,
+			env: { ...cleanEnv, BEADS_DIR: join(upper, ".beads") },
+			stdio: "ignore",
+		});
+		const o: BdOptions = { ...opts, cwd: upper };
+		const id = await bdCreate(o, { title: "upper", type: "task", priority: 2 });
+		assert.match(id, /^CTM-/);
+		// Pin the bd behaviour this works around (update if bd fixes it).
+		assert.deepEqual(ids(await bdSearch(o, id)), []);
+		assert.deepEqual(ids(await find(id, EMPTY_FILTER, o)), [id]);
+		assert.deepEqual(ids(await find(id.slice(4), EMPTY_FILTER, o)), [id], "the suffix alone works too");
+	} finally {
+		rmSync(upper, { recursive: true, force: true });
+	}
+});
+
 test("filter dropdown options come from real bd output", { skip }, async () => {
 	await seedFilterData();
 	const [assignees, labels, types] = await Promise.all([
@@ -288,6 +417,7 @@ test("every bd call reads the same data with BD_JSON_ENVELOPE=1 (bd v2.0 default
 		labels: (await bdLabelNames(opts)).sort(),
 		assignees: (await bdAssigneeNames(opts)).sort(),
 		types: await bdTypeNames(opts),
+		found: ids(await find("probe")),
 	});
 	const legacy = await snapshot();
 	await withEnvelope(async () => {

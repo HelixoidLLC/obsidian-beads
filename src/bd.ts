@@ -413,6 +413,20 @@ export async function bdQueryCached(
 	);
 }
 
+// --- Search (never cached or clamped: the caller wants every match) ---------
+
+/** `bd query -a --limit 0 -- <expr>`: every matching bead, closed included. */
+export async function bdQueryAll(opts: BdOptions, expr: string): Promise<BeadIssue[]> {
+	const { stdout } = await run(["query", "--json", "-a", "--limit", "0", "--", expr], opts);
+	return parseIssues(stdout);
+}
+
+/** `bd search --limit 0 --query=<word>`: title and ID matches, closed included. */
+export async function bdSearch(opts: BdOptions, word: string): Promise<BeadIssue[]> {
+	const { stdout } = await run(["search", "--json", "--limit", "0", `--query=${word}`], opts);
+	return parseIssues(stdout);
+}
+
 // --- Mutations (clear the code-block cache) ------------------------------
 
 export interface BdCreateFields {
